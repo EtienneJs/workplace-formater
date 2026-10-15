@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Formateo a HTML</title>
+<link rel="stylesheet" href="/static/estilos.css">
+<script>
+  const temaGuardado = localStorage.getItem("tema");
+  document.documentElement.dataset.tema = ["claro", "oscuro", "halloween"].includes(temaGuardado) ? temaGuardado : "claro";
+</script>
+</head>
+<body>
+<div class="murcielagos" aria-hidden="true">
+  <span>🦇</span><span>🦇</span><span>🦇</span><span>🦇</span><span>🦇</span>
+</div>
+<div class="contenedor">
+
+<header class="aparecer">
+  <div>
+    <div class="titulo">
+      <h1>Formateo a HTML</h1>
+      <span class="calabaza" aria-hidden="true">🎃</span>
+    </div>
+    <p>Convertí texto o columnas de un CSV a HTML usando tus reglas y un modelo local de Ollama.</p>
+  </div>
+  <div class="selector-tema" role="group" aria-label="Tema">
+    <button class="tema-btn" data-tema="claro" aria-pressed="false" title="Modo claro">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      Claro
+    </button>
+    <button class="tema-btn" data-tema="oscuro" aria-pressed="false" title="Modo oscuro">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      Oscuro
+    </button>
+    <button class="tema-btn" data-tema="halloween" aria-pressed="false" title="Modo Halloween">
+      <span aria-hidden="true">🎃</span>
+      Halloween
+    </button>
+  </div>
+</header>
+
+<nav class="tabs aparecer" role="tablist" style="animation-delay: 0.1s">
+  <span class="indicador" id="indicador"></span>
+  <button class="tab" role="tab" data-panel="panel-texto">Texto</button>
+  <button class="tab" role="tab" data-panel="panel-csv">CSV</button>
+  <button class="tab" role="tab" data-panel="panel-config">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+    Configuración
+  </button>
+</nav>
+
+<section id="panel-texto" role="tabpanel">
+  <div class="tarjeta">
+    <div class="barra">
+      <label class="campo">Regla <select id="regla"></select></label>
+      <button class="btn primario" id="btn">Formatear</button>
+      <button class="btn" id="copiar">Copiar HTML</button>
+      <span class="estado" id="estado"></span>
+      <span class="espacio"></span>
+      <span class="ayuda">Ctrl + Enter para formatear</span>
+    </div>
+
+    <div class="editor">
+      <div>
+        <label class="titulo-campo" for="entrada">Texto original</label>
+        <textarea id="entrada" placeholder="Pegá el texto acá"></textarea>
+      </div>
+      <div>
+        <label class="titulo-campo" for="salida">HTML generado</label>
+        <textarea id="salida" readonly placeholder="El HTML aparece acá"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="tarjeta">
+    <h2>Vista previa</h2>
+    <div class="vista" id="vista"></div>
+  </div>
+</section>
+
+<section id="panel-csv" role="tabpanel" hidden>
+  <div class="tarjeta">
+    <label class="zona" id="zona-csv">
+      <input type="file" id="archivo-csv" accept=".csv,text/csv">
+      <strong id="zona-titulo">Arrastrá un CSV acá o hacé clic para elegirlo</strong>
+      <span id="zona-detalle">Separado por coma, punto y coma o tabulación</span>
+    </label>
+
+    <div class="barra separada barra-controles" id="controles-csv" hidden>
+      <div class="botonera" role="group" aria-label="Regla">
+        <span class="botonera-titulo">Regla</span>
+        <select id="regla-general" title="Regla general (la usan las columnas sin regla propia)"></select>
+        <button class="btn primario" id="formatear-tabla" title="Formatear las celdas pendientes (se omiten las ya formateadas y las excluidas del JSON)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z"/><path d="M19 17v4M17 19h4"/></svg>
+          Formatear tabla
+        </button>
+        <button class="btn peligro" id="detener" hidden>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          Detener
+        </button>
+      </div>
+      <span class="espacio"></span>
+      <div class="botonera" role="group" aria-label="Tabla">
+        <span class="botonera-titulo">Tabla</span>
+        <button class="btn" id="ver-codigo" aria-pressed="false" title="Ver el código HTML en las celdas">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>
+          <span class="txt">Código HTML</span>
+        </button>
+        <button class="btn" id="restaurar" title="Volver al texto original de todas las celdas">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+          <span class="txt">Restaurar</span>
+        </button>
+        <button class="btn" id="descargar" title="Descargar CSV">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          CSV
+        </button>
+      </div>
+      <div class="botonera" role="group" aria-label="JSON">
+        <span class="botonera-titulo">JSON</span>
+        <button class="btn" id="ver-json" aria-pressed="false" title="Vista previa del JSON">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span class="txt">Vista previa</span>
+        </button>
+        <button class="btn" id="ver-referencia" aria-pressed="false" title="JSON de referencia">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2Z"/></svg>
+          <span class="txt">Referencia</span>
+        </button>
+        <button class="btn" id="descargar-json" title="Descargar JSON">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          JSON
+        </button>
+      </div>
+    </div>
+
+    <div class="barra separada">
+      <span class="estado" id="estado-csv"></span>
+      <span class="espacio"></span>
+      <span class="ayuda guardado" id="guardado-csv"></span>
+    </div>
+    <div class="progreso" id="progreso" hidden><div id="progreso-barra"></div></div>
+
+    <div class="barra seleccion" id="seleccion-csv" hidden>
+      <div class="botonera" role="group" aria-label="Seleccionar filas">
+        <span class="botonera-titulo">Filas <span class="contador" id="contador-filas"></span></span>
+        <button class="btn" data-seleccion="filas" data-accion="todas" title="Incluir todas las filas">Todas</button>
+        <button class="btn" data-seleccion="filas" data-accion="ninguna" title="Excluir todas las filas">Ninguna</button>
+        <button class="btn" data-seleccion="filas" data-accion="invertir" title="Las incluidas pasan a excluidas y al revés">Invertir</button>
+      </div>
+      <div class="botonera" role="group" aria-label="Seleccionar columnas">
+        <span class="botonera-titulo">Columnas <span class="contador" id="contador-columnas"></span></span>
+        <button class="btn" data-seleccion="columnas" data-accion="todas" title="Incluir todas las columnas">Todas</button>
+        <button class="btn" data-seleccion="columnas" data-accion="ninguna" title="Excluir todas las columnas">Ninguna</button>
+        <button class="btn" data-seleccion="columnas" data-accion="invertir" title="Las incluidas pasan a excluidas y al revés">Invertir</button>
+      </div>
+      <button class="btn" id="ocultar-excluidas" aria-pressed="false" title="Ocultar de la tabla las filas que no van al JSON">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.2A9.6 9.6 0 0 1 12 4c6.5 0 10 8 10 8a17 17 0 0 1-2.2 3.3M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2M2 2l20 20"/></svg>
+        Ocultar excluidas
+        <span class="contador" id="contador-ocultas" hidden></span>
+      </button>
+      <span class="espacio"></span>
+      <span class="ayuda">Arrastrá sobre los números de fila para marcar varias · Shift + clic marca un rango</span>
+    </div>
+
+    <div class="tabla-contenedor" id="contenedor-csv" hidden>
+      <table>
+        <thead id="cabecera-csv"></thead>
+        <tbody id="cuerpo-csv"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="panel-config" role="tabpanel" hidden>
+  <div class="tarjeta">
+    <div class="config-cabecera">
+      <div>
+        <h2>Reglas</h2>
+        <p class="ayuda">Cada regla es un archivo <code>.md</code> de la carpeta <code>rules/</code>. Su texto se le pasa al modelo como instrucciones.</p>
+      </div>
+      <div class="config-acciones">
+        <span class="estado" id="regla-estado"></span>
+        <button class="btn primario" id="regla-nueva">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Nueva regla
+        </button>
+      </div>
+    </div>
+
+    <div class="config-reglas">
+      <nav class="lista-reglas" id="lista-reglas" aria-label="Reglas"></nav>
+
+      <div class="editor-regla">
+        <div class="regla-vacia" id="regla-vacia">Elegí una regla de la lista o creá una nueva.</div>
+        <div class="regla-panel" id="regla-panel" hidden>
+          <div class="regla-cabecera">
+            <h3 class="regla-titulo" id="regla-titulo"></h3>
+            <span class="ref-cambios" id="regla-cambios" hidden>Cambios sin guardar</span>
+            <span class="espacio"></span>
+            <div class="botonera" role="group" aria-label="Acciones de la regla">
+              <button class="btn" id="regla-renombrar" title="Cambiar el nombre de la regla">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                Renombrar
+              </button>
+              <button class="btn peligro" id="regla-eliminar" title="Eliminar la regla">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+                Eliminar
+              </button>
+            </div>
+          </div>
+          <textarea id="regla-texto" spellcheck="false" placeholder="Escribí las instrucciones para el modelo"></textarea>
+          <div class="regla-pie">
+            <span class="ayuda" id="regla-info"></span>
+            <span class="espacio"></span>
+            <span class="ayuda">Ctrl + S para guardar</span>
+            <button class="btn" id="regla-descartar" hidden>Descartar cambios</button>
+            <button class="btn primario" id="regla-guardar">Guardar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tarjeta">
+    <div class="config-cabecera">
+      <div>
+        <h2>Modelo</h2>
+        <p class="ayuda">El modelo de Ollama que formatea. Los chicos son más rápidos; los grandes siguen mejor las reglas complejas. Para agregar uno: <code>ollama pull nombre</code>.</p>
+      </div>
+    </div>
+    <div class="barra">
+      <div class="botonera" role="group" aria-label="Modelo">
+        <span class="botonera-titulo">Modelo</span>
+        <select id="modelo" title="Modelos instalados en Ollama"></select>
+        <button class="btn primario" id="modelo-guardar">Usar este modelo</button>
+      </div>
+      <button class="btn" id="modelo-actualizar" title="Volver a leer los modelos instalados en Ollama">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        Actualizar lista
+      </button>
+      <span class="estado" id="modelo-estado"></span>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<aside class="cajon" id="cajon-json" hidden>
+  <div class="cajon-cabecera">
+    <div class="subtabs" role="tablist">
+      <button class="subtab" role="tab" data-vista="vista">Vista previa</button>
+      <button class="subtab" role="tab" data-vista="referencia">Referencia</button>
+    </div>
+    <button class="btn-icono" id="cerrar-json" title="Cerrar (Esc)">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+
+  <div class="cajon-seccion" id="cajon-vista">
+    <div class="cajon-resumen" id="json-resumen"></div>
+    <pre class="cajon-cuerpo" id="json-vista"></pre>
+    <div class="cajon-pie">
+      <button class="btn" id="copiar-json">Copiar</button>
+      <button class="btn primario" id="descargar-json-cajon">Descargar JSON</button>
+    </div>
+  </div>
+
+  <div class="cajon-seccion" id="cajon-referencia" hidden>
+    <div class="ref-cuerpo">
+      <div class="ref-barra">
+        <select id="ref-lista" title="Referencias guardadas"></select>
+        <button class="btn" id="ref-guardar">Guardar</button>
+        <button class="btn peligro" id="ref-eliminar">Eliminar</button>
+      </div>
+      <div class="ref-avisos">
+        <span class="ref-cambios" id="ref-cambios" hidden></span>
+        <span class="estado" id="ref-mensaje"></span>
+      </div>
+      <p class="ayuda">Pegá el JSON que necesitás obtener, con datos de ejemplo. Sus claves aparecen como sugerencias al renombrar columnas con el engranaje.</p>
+      <textarea id="ref-texto" spellcheck="false" placeholder='[&#10;  { "titulo": "Contador Público", "duracion": "10 semestres" }&#10;]'></textarea>
+      <div><span class="estado" id="ref-estado"></span></div>
+      <div class="ref-claves" id="ref-claves"></div>
+    </div>
+    <div class="cajon-pie">
+      <button class="btn" id="ref-limpiar">Limpiar</button>
+      <button class="btn" id="ref-ordenar">Ordenar JSON</button>
+    </div>
+  </div>
+</aside>
+
+<dialog class="modal" id="modal-columna">
+  <form method="dialog" id="form-columna">
+    <h3>Configurar columna</h3>
+    <p class="ayuda">Columna del CSV: <strong id="modal-nombre"></strong></p>
+
+    <label class="titulo-campo" for="modal-clave">Nombre en el JSON</label>
+    <input type="text" class="entrada-texto" id="modal-clave" autocomplete="off" spellcheck="false">
+    <div id="modal-sugerencias"></div>
+
+    <label class="casilla modal-casilla"><input type="checkbox" id="modal-incluir"> Incluir esta columna en el JSON</label>
+
+    <span class="titulo-campo">Vista previa</span>
+    <pre class="vista-json" id="modal-vista"></pre>
+
+    <p class="error-campo" id="modal-error"></p>
+
+    <div class="barra">
+      <button type="button" class="btn" id="modal-restablecer">Restablecer</button>
+      <span class="espacio"></span>
+      <button type="button" class="btn" id="modal-cancelar">Cancelar</button>
+      <button type="submit" class="btn primario">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="modal modal-grande" id="modal-celda">
+  <div class="celda-modal">
+    <div class="celda-cabecera">
+      <div>
+        <h3 id="celda-titulo"></h3>
+        <p class="ayuda" id="celda-subtitulo"></p>
+      </div>
+      <button class="btn-icono" id="celda-cerrar" title="Cerrar (Esc)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="celda-barra">
+      <div class="subtabs" role="tablist" id="celda-vistas">
+        <button class="subtab" role="tab" data-modo="vista">Vista</button>
+        <button class="subtab" role="tab" data-modo="codigo">Código HTML</button>
+        <button class="subtab" role="tab" data-modo="original">Original</button>
+      </div>
+      <span id="celda-etiqueta"></span>
+      <span class="espacio"></span>
+      <span class="ayuda">← → ↑ ↓ para moverte entre celdas</span>
+    </div>
+    <div class="celda-cuerpo" id="celda-cuerpo"></div>
+    <div class="celda-pie">
+      <span class="ayuda" id="celda-info"></span>
+      <span class="espacio"></span>
+      <button class="btn" id="celda-copiar">Copiar</button>
+      <button class="btn" id="celda-restaurar">Volver al original</button>
+      <button class="btn primario" id="celda-formatear">Formatear</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="modal modal-chico" id="modal-ref">
+  <form method="dialog" id="form-ref">
+    <h3 id="modal-ref-titulo"></h3>
+    <p class="ayuda" id="modal-ref-mensaje"></p>
+    <input type="text" class="entrada-texto" id="modal-ref-nombre" autocomplete="off" spellcheck="false" maxlength="60">
+    <p class="error-campo" id="modal-ref-error"></p>
+    <div class="barra">
+      <span class="espacio"></span>
+      <button type="button" class="btn" id="modal-ref-cancelar">Cancelar</button>
+      <button type="submit" class="btn primario" id="modal-ref-aceptar">Aceptar</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
