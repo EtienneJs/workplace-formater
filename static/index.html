@@ -95,6 +95,11 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z"/><path d="M19 17v4M17 19h4"/></svg>
           Formatear tabla
         </button>
+        <button class="btn primario" id="formatear-seleccion" hidden title="Formatear las celdas seleccionadas con la regla de su columna (también las ya formateadas)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z"/><path d="M19 17v4M17 19h4"/></svg>
+          <span class="txt">Formatear celdas</span>
+          <span class="contador" id="contador-celdas">0</span>
+        </button>
         <button class="btn peligro" id="detener" hidden>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
           Detener
@@ -141,17 +146,13 @@
     <div class="progreso" id="progreso" hidden><div id="progreso-barra"></div></div>
 
     <div class="barra seleccion" id="seleccion-csv" hidden>
-      <div class="botonera" role="group" aria-label="Seleccionar filas">
-        <span class="botonera-titulo">Filas <span class="contador" id="contador-filas"></span></span>
-        <button class="btn" data-seleccion="filas" data-accion="todas" title="Incluir todas las filas">Todas</button>
-        <button class="btn" data-seleccion="filas" data-accion="ninguna" title="Excluir todas las filas">Ninguna</button>
-        <button class="btn" data-seleccion="filas" data-accion="invertir" title="Las incluidas pasan a excluidas y al revés">Invertir</button>
-      </div>
-      <div class="botonera" role="group" aria-label="Seleccionar columnas">
-        <span class="botonera-titulo">Columnas <span class="contador" id="contador-columnas"></span></span>
-        <button class="btn" data-seleccion="columnas" data-accion="todas" title="Incluir todas las columnas">Todas</button>
-        <button class="btn" data-seleccion="columnas" data-accion="ninguna" title="Excluir todas las columnas">Ninguna</button>
-        <button class="btn" data-seleccion="columnas" data-accion="invertir" title="Las incluidas pasan a excluidas y al revés">Invertir</button>
+      <div class="botonera" role="group" aria-label="Seleccionar celdas">
+        <span class="botonera-titulo">Celdas</span>
+        <button class="btn" id="modo-celdas" aria-pressed="false" title="Elegir a mano qué celdas formatear (Esc para salir)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="m9 11 3 3L22 4"/></svg>
+          Seleccionar
+        </button>
+        <button class="btn" id="limpiar-celdas" hidden title="Quitar la selección de todas las celdas">Quitar selección</button>
       </div>
       <button class="btn" id="ocultar-excluidas" aria-pressed="false" title="Ocultar de la tabla las filas que no van al JSON">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.2A9.6 9.6 0 0 1 12 4c6.5 0 10 8 10 8a17 17 0 0 1-2.2 3.3M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2M2 2l20 20"/></svg>
@@ -159,7 +160,7 @@
         <span class="contador" id="contador-ocultas" hidden></span>
       </button>
       <span class="espacio"></span>
-      <span class="ayuda">Arrastrá sobre los números de fila para marcar varias · Shift + clic marca un rango</span>
+      <span class="ayuda" id="ayuda-filas">Arrastrá sobre los números de fila para marcar varias · Shift + clic marca un rango</span>
     </div>
 
     <div class="tabla-contenedor" id="contenedor-csv" hidden>
@@ -332,15 +333,31 @@
       </div>
       <span id="celda-etiqueta"></span>
       <span class="espacio"></span>
-      <span class="ayuda">← → ↑ ↓ para moverte entre celdas</span>
+      <span class="ayuda" id="celda-ayuda-flechas">← → ↑ ↓ para moverte entre celdas</span>
     </div>
     <div class="celda-cuerpo" id="celda-cuerpo"></div>
+    <div class="celda-editor-marco" id="celda-editor-marco" hidden>
+      <pre class="celda-editor-resaltado" id="celda-editor-resaltado" aria-hidden="true"></pre>
+      <textarea class="celda-cuerpo celda-editor" id="celda-editor" spellcheck="true"></textarea>
+    </div>
+    <form class="celda-instruccion" id="celda-instruccion-form" autocomplete="off">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z"/><path d="M19 17v4M17 19h4"/></svg>
+      <input type="text" class="entrada-texto" id="celda-instruccion" maxlength="500" spellcheck="true" title="Funciona mejor con un cambio por pedido; podés encadenar varios antes de guardar">
+      <span class="ayuda celda-consejo">Un cambio por pedido</span>
+      <button type="submit" class="btn primario" id="celda-aplicar">Pedir cambio</button>
+    </form>
     <div class="celda-pie">
       <span class="ayuda" id="celda-info"></span>
       <span class="espacio"></span>
+      <button class="btn" id="celda-editar">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        <span id="celda-editar-txt">Editar</span>
+      </button>
       <button class="btn" id="celda-copiar">Copiar</button>
       <button class="btn" id="celda-restaurar">Volver al original</button>
       <button class="btn primario" id="celda-formatear">Formatear</button>
+      <button class="btn" id="celda-cancelar-edicion" hidden>Cancelar</button>
+      <button class="btn primario" id="celda-guardar-edicion" hidden>Guardar cambios</button>
     </div>
   </div>
 </dialog>

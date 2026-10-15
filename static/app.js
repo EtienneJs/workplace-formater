@@ -152,6 +152,126 @@ function tonoRegla(regla) {
   return h;
 }
 
+// ---------- Código HTML con colores y sangría ----------
+// Solo cambia cómo se ve: lo que se copia, se guarda y se exporta sigue siendo el HTML tal cual.
+// Se trabaja sobre el texto (no con el DOM) para no "arreglar" en pantalla un HTML que en realidad está mal.
+
+const BLOQUES_HTML = new Set("address article aside blockquote dd div dl dt figcaption figure footer h1 h2 h3 h4 h5 h6 header hr li main nav ol p pre section table tbody td tfoot th thead tr ul".split(" "));
+const VACIAS_HTML = new Set("area base br col embed hr img input link meta source track wbr".split(" "));
+const TOKEN_HTML = /<!--[\s\S]*?-->|<\/?([a-zA-Z][\w:-]*)((?:"[^"]*"|'[^']*'|[^'">])*)>|[^<]+|</g;
+const ATRIBUTO_HTML = /([^\s=/]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/g;
+
+const pieza = (clase, texto) => `<span class="${clase}">${escaparHtml(texto)}</span>`;
+
+function pintarEtiquetaHtml(token, nombre, atributos) {
+  const autocierre = /\/\s*>$/.test(token);
+  let html = pieza("h-signo", token.startsWith("</") ? "</" : "<") + pieza("h-etiqueta", nombre);
+  for (const [, atributo, valor] of atributos.replace(/\/\s*$/, "").matchAll(ATRIBUTO_HTML)) {
+    html += " " + pieza("h-atributo", atributo);
+    if (valor != null) html += pieza("h-signo", "=") + pieza("h-valor", valor);
+  }
+  return html + pieza("h-signo", autocierre ? " />" : ">");
+}
+
+// Una línea por cada bloque (<p>, <li>, <h2>...); lo que va dentro de un bloque queda en su misma línea
+function lineasHtml(html) {
+  const lineas = [];
+  const conBloquesAdentro = [];
+  let actual = null;
+  let nivel = 0;
+  let saltoPendiente = false;
+  const abrirLinea = () => {
+    if (actual) actual.html = actual.html.replace(/ $/, "");
+    actual = { nivel, html: "" };
+    lineas.push(actual);
+    saltoPendiente = false;
+  };
+  const agregar = (html) => {
+    if (!actual || saltoPendiente) abrirLinea();
+    actual.html += html;
+  };
+
+  for (const [token, nombre, atributos] of html.matchAll(TOKEN_HTML)) {
+    if (token.startsWith("<!--")) {
+      abrirLinea();
+      actual.html = pieza("h-comentario", token.replace(/\s+/g, " "));
+      saltoPendiente = true;
+    } else if (!nombre) {
+      let texto = token.replace(/\s+/g, " ");
+      if (!actual || saltoPendiente || !actual.html) texto = texto.trimStart();
+      if (texto) agregar(escaparHtml(texto));
+    } else if (!BLOQUES_HTML.has(nombre.toLowerCase())) {
+      agregar(pintarEtiquetaHtml(token, nombre, atributos));
+    } else if (token.startsWith("</")) {
+      nivel = Math.max(0, nivel - 1);
+      if (conBloquesAdentro.pop()) abrirLinea();
+      else if (actual) actual.html = actual.html.replace(/ $/, "");
+      agregar(pintarEtiquetaHtml(token, nombre, atributos));
+      saltoPendiente = true;
+    } else {
+      if (conBloquesAdentro.length) conBloquesAdentro[conBloquesAdentro.length - 1] = true;
+      abrirLinea();
+      actual.html = pintarEtiquetaHtml(token, nombre, atributos);
+      if (VACIAS_HTML.has(nombre.toLowerCase()) || /\/\s*>$/.test(token)) {
+        saltoPendiente = true;
+      } else {
+        nivel++;
+        conBloquesAdentro.push(false);
+      }
+    }
+  }
+  return lineas;
+}
+
+// Para el editor: colorea sin mover ni un espacio, porque tiene que coincidir carácter por carácter con lo que se escribe
+function colorearHtmlExacto(texto) {
+  let html = "";
+  for (const [token, nombre] of texto.matchAll(TOKEN_HTML)) {
+    if (token.startsWith("<!--")) html += pieza("h-comentario", token);
+    else if (!nombre) html += escaparHtml(token);
+    else html += colorearEtiquetaExacta(token);
+  }
+  return html;
+}
+
+// Una caja por línea para poder numerarlas; una etiqueta partida en dos líneas queda sin colorear
+function colorearHtmlConNumeros(texto) {
+  return texto.split("\n").map((linea) => `<span class="linea">${colorearHtmlExacto(linea) || " "}</span>`).join("");
+}
+
+function colorearEtiquetaExacta(token) {
+  const [, apertura, nombre, resto, cierre] = token.match(/^(<\/?)([a-zA-Z][\w:-]*)([\s\S]*?)(\/?>)$/);
+  let despuesDeIgual = false;
+  const atributos = resto.replace(/("[^"]*"|'[^']*')|(=)|(\s+)|([^\s="']+)/g, (_, valor, igual, espacio, palabra) => {
+    if (espacio) return espacio;
+    if (igual) {
+      despuesDeIgual = true;
+      return pieza("h-signo", igual);
+    }
+    const clase = valor || despuesDeIgual ? "h-valor" : "h-atributo";
+    despuesDeIgual = false;
+    return pieza(clase, valor ?? palabra);
+  });
+  return pieza("h-signo", apertura) + pieza("h-etiqueta", nombre) + atributos + pieza("h-signo", cierre);
+}
+
+function resaltarHtml(html) {
+  return lineasHtml(html).map((l) => "  ".repeat(l.nivel) + l.html).join("\n");
+}
+
+// El mismo orden que la vista, pero como texto para el editor (el textContent del coloreado es el HTML original)
+const plantillaTexto = document.createElement("template");
+function ordenarHtml(html) {
+  return lineasHtml(html).map((l) => {
+    plantillaTexto.innerHTML = l.html;
+    return "  ".repeat(l.nivel) + plantillaTexto.content.textContent;
+  }).join("\n");
+}
+
+function resaltarHtmlConNumeros(html) {
+  return lineasHtml(html).map((l) => `<span class="linea" style="--nivel: ${l.nivel}">${l.html}</span>`).join("");
+}
+
 function reglaDeColumna(c) {
   return tabla.selects[c].value || $("regla-general").value;
 }
@@ -164,7 +284,7 @@ function pintarCelda(celda) {
     contenido.innerHTML = celda.html;
   } else if (celda.html != null) {
     contenido.classList.add("codigo");
-    contenido.textContent = celda.html;
+    contenido.innerHTML = resaltarHtml(celda.html);
   } else {
     contenido.textContent = celda.original;
   }
@@ -190,7 +310,7 @@ function pintarCelda(celda) {
   celda.td.classList.toggle("trabajando", celda.estado === "trabajando");
   celda.td.classList.toggle("excluida", !tabla.config[celda.columna].incluir);
   celda.td.replaceChildren(contenido, pie);
-  celda.td.querySelectorAll("button").forEach((b) => (b.disabled = ocupado));
+  celda.td.querySelectorAll("button").forEach((b) => (b.disabled = ocupado || modoCeldas));
   if (celda === celdaAbierta) pintarModalCelda();
   programarVistaJson();
   programarGuardado();
@@ -209,9 +329,13 @@ function etiquetaCelda(celda) {
 
 let celdaAbierta = null;
 let modoCelda = "vista";
+// Mientras se edita: qué se edita ("original" o "codigo") y el texto con el que arrancó, para saber si hay cambios
+let edicionCelda = null;
+let pidiendoInstruccion = false;
 
 function abrirCelda(celda) {
   celdaAbierta = celda;
+  edicionCelda = null;
   const verCodigo = $("ver-codigo").getAttribute("aria-pressed") === "true";
   modoCelda = celda.html == null ? "original" : verCodigo ? "codigo" : "vista";
   pintarModalCelda();
@@ -229,10 +353,38 @@ function pintarModalCelda() {
     `Fila ${celda.fila + 1} de ${tabla.filas.length}` + (excluida ? " · no se exporta al JSON" : "");
   $("celda-etiqueta").replaceChildren(etiquetaCelda(celda) ?? "");
 
+  const editando = edicionCelda != null;
   for (const boton of document.querySelectorAll("#celda-vistas .subtab")) {
     boton.setAttribute("aria-selected", String(boton.dataset.modo === modoCelda));
-    boton.disabled = boton.dataset.modo !== "original" && !tieneHtml;
+    boton.disabled = editando || (boton.dataset.modo !== "original" && !tieneHtml);
   }
+  $("celda-cuerpo").hidden = editando;
+  $("celda-editor-marco").hidden = !editando;
+  $("celda-ayuda-flechas").hidden = editando;
+  const editandoCodigo = edicionCelda?.tipo === "codigo";
+  $("celda-editor-marco").classList.toggle("codigo", editandoCodigo);
+  $("celda-editor").classList.toggle("codigo", editandoCodigo);
+  $("celda-editor").spellcheck = !editandoCodigo;
+  if (editandoCodigo) actualizarResaltadoEditor();
+  for (const id of ["celda-editar", "celda-copiar", "celda-restaurar", "celda-formatear"]) $(id).hidden = editando;
+  $("celda-cancelar-edicion").hidden = $("celda-guardar-edicion").hidden = !editando;
+  const sobre = edicionCelda?.tipo ?? (modoCelda === "original" ? "original" : "codigo");
+  $("celda-instruccion").placeholder = sobre === "original"
+    ? "Pedile al modelo un cambio en el texto original, por ej.: «corregí la ortografía»"
+    : "Pedile al modelo un cambio en el HTML, por ej.: «quitá el título» o «poné en negrita los requisitos»";
+  $("celda-instruccion").disabled = $("celda-aplicar").disabled = ocupado || pidiendoInstruccion;
+  if (editando && edicionCelda.propuesta) {
+    $("celda-info").textContent = "Propuesta del modelo: revisala y guardá, o pedí otro cambio encima · Esc la descarta";
+    return;
+  }
+  if (editando) {
+    $("celda-info").textContent = edicionCelda.tipo === "original" && tieneHtml
+      ? "Editando el texto original · el HTML formateado no cambia hasta que lo vuelvas a formatear · Ctrl + Enter para guardar"
+      : `Editando ${edicionCelda.tipo === "original" ? "el texto original" : "el código HTML"} · Ctrl + Enter para guardar · Esc para cancelar`;
+    return;
+  }
+  $("celda-editar-txt").textContent = modoCelda === "original" ? "Editar texto" : "Editar HTML";
+  $("celda-editar").disabled = ocupado;
 
   const cuerpo = $("celda-cuerpo");
   const texto = modoCelda === "original" ? celda.original : celda.html;
@@ -242,6 +394,8 @@ function pintarModalCelda() {
     cuerpo.textContent = "La celda está vacía";
   } else if (modoCelda === "vista") {
     cuerpo.innerHTML = celda.html;
+  } else if (modoCelda === "codigo") {
+    cuerpo.innerHTML = resaltarHtmlConNumeros(celda.html);
   } else {
     cuerpo.textContent = texto;
   }
@@ -288,15 +442,147 @@ $("celda-restaurar").onclick = () => {
 };
 
 $("celda-formatear").onclick = () => formatearCeldas([celdaAbierta]);
-$("celda-cerrar").onclick = () => $("modal-celda").close();
+
+$("celda-editar").onclick = () => {
+  const tipo = modoCelda === "original" ? "original" : "codigo";
+  const texto = tipo === "original" ? celdaAbierta.original : ordenarHtml(celdaAbierta.html);
+  edicionCelda = { tipo, inicial: texto };
+  modoCelda = tipo;
+  $("celda-editor").value = texto;
+  pintarModalCelda();
+  $("celda-editor").focus();
+  $("celda-editor").setSelectionRange(0, 0);
+  $("celda-editor").scrollTop = 0;
+};
+
+function actualizarResaltadoEditor() {
+  const editor = $("celda-editor");
+  const resaltado = $("celda-editor-resaltado");
+  resaltado.innerHTML = colorearHtmlConNumeros(editor.value);
+  resaltado.scrollTop = editor.scrollTop;
+  resaltado.scrollLeft = editor.scrollLeft;
+}
+
+$("celda-editor").addEventListener("input", () => {
+  if (edicionCelda?.tipo === "codigo") actualizarResaltadoEditor();
+});
+$("celda-editor").addEventListener("scroll", () => {
+  $("celda-editor-resaltado").scrollTop = $("celda-editor").scrollTop;
+  $("celda-editor-resaltado").scrollLeft = $("celda-editor").scrollLeft;
+});
+
+function guardarEdicionCelda() {
+  const celda = celdaAbierta;
+  const valor = $("celda-editor").value;
+  if (edicionCelda.tipo === "original") {
+    celda.original = valor;
+    celda.td.classList.toggle("vacia", !valor.trim());
+    if (!valor.trim()) marcarCelda(celda, false);
+  } else if (valor.trim()) {
+    celda.html = valor;
+  } else {
+    // Borrar todo el HTML equivale a volver al texto original
+    Object.assign(celda, { html: null, regla: null });
+    modoCelda = "original";
+  }
+  edicionCelda = null;
+  actualizarBotonCeldas();
+  pintarCelda(celda);
+}
+
+async function salirDeEdicionCelda() {
+  if ($("celda-editor").value !== edicionCelda.inicial) {
+    const descartar = await dialogoRef({
+      titulo: "Descartar cambios",
+      mensaje: "Hiciste cambios en esta celda que todavía no guardaste. ¿Querés descartarlos?",
+      aceptar: "Descartar",
+      peligro: true,
+    });
+    if (!descartar) return false;
+  }
+  edicionCelda = null;
+  pintarModalCelda();
+  return true;
+}
+
+// El resultado del modelo se carga en el editor para revisarlo antes de guardar
+$("celda-instruccion-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const instruccion = $("celda-instruccion").value.trim();
+  if (!instruccion || pidiendoInstruccion) return $("celda-instruccion").focus();
+  const celda = celdaAbierta;
+  const tipo = edicionCelda?.tipo ?? (modoCelda === "original" ? "original" : "codigo");
+  const texto = edicionCelda ? $("celda-editor").value : tipo === "original" ? celda.original : celda.html;
+  if (!texto.trim()) {
+    $("celda-info").textContent = "No hay texto al que aplicarle el cambio";
+    return;
+  }
+
+  pidiendoInstruccion = true;
+  pintarModalCelda();
+  $("celda-instruccion-form").classList.add("pidiendo");
+  $("celda-aplicar").textContent = "Pidiendo...";
+  $("celda-info").textContent = `El modelo está aplicando: «${instruccion}»`;
+  try {
+    const { resultado } = await api("/instruccion", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texto, instruccion, es_html: tipo === "codigo" }),
+    });
+    // Si mientras tanto se cerró el visor o se pasó a otra celda, el resultado ya no corresponde
+    if (celdaAbierta !== celda) return;
+    if (!edicionCelda) {
+      edicionCelda = { tipo, inicial: texto };
+      modoCelda = tipo;
+    }
+    edicionCelda.propuesta = true;
+    $("celda-editor").value = tipo === "codigo" ? ordenarHtml(resultado) : resultado;
+    $("celda-instruccion").value = "";
+  } catch (error) {
+    if (celdaAbierta === celda) $("celda-info").textContent = `Error: ${error.message}`;
+    return;
+  } finally {
+    pidiendoInstruccion = false;
+    $("celda-instruccion-form").classList.remove("pidiendo");
+    $("celda-aplicar").textContent = "Pedir cambio";
+    $("celda-instruccion").disabled = $("celda-aplicar").disabled = ocupado;
+  }
+  pintarModalCelda();
+  $("celda-editor").focus();
+};
+
+$("celda-guardar-edicion").onclick = guardarEdicionCelda;
+$("celda-cancelar-edicion").onclick = salirDeEdicionCelda;
+
+async function cerrarCelda() {
+  if (edicionCelda && !(await salirDeEdicionCelda())) return;
+  $("modal-celda").close();
+}
+
+$("celda-cerrar").onclick = cerrarCelda;
 
 $("modal-celda").onclick = (e) => {
-  if (e.target === $("modal-celda")) $("modal-celda").close();
+  if (e.target === $("modal-celda")) cerrarCelda();
+};
+// Esc mientras se edita cancela la edición en vez de cerrar el visor
+$("modal-celda").oncancel = (e) => {
+  if (!edicionCelda) return;
+  e.preventDefault();
+  salirDeEdicionCelda();
 };
 $("modal-celda").onclose = () => {
   celdaAbierta = null;
+  edicionCelda = null;
 };
 $("modal-celda").onkeydown = (e) => {
+  if (edicionCelda) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.key.toLowerCase() === "s")) {
+      e.preventDefault();
+      guardarEdicionCelda();
+    }
+    return;
+  }
+  if (e.target.matches("input, textarea")) return;
   const movimiento = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
   if (!movimiento) return;
   e.preventDefault();
@@ -312,11 +598,8 @@ function pintarFila(f) {
 function actualizarSeleccion() {
   const total = tabla.filas.length;
   const filas = tabla.filas.filter((fila) => fila.incluir).length;
-  const columnas = tabla.config.filter((conf) => conf.incluir).length;
   $("todas-filas").checked = filas === total;
   $("todas-filas").indeterminate = filas > 0 && filas < total;
-  $("contador-filas").textContent = `${filas}/${total}`;
-  $("contador-columnas").textContent = `${columnas}/${tabla.config.length}`;
   const ocultando = $("ocultar-excluidas").getAttribute("aria-pressed") === "true";
   $("contador-ocultas").textContent = total - filas;
   $("contador-ocultas").hidden = !ocultando || filas === total;
@@ -327,7 +610,7 @@ function actualizarSeleccion() {
 // `valor` puede ser un booleano o una función que recibe el estado actual (para invertir)
 function cambiarFilas(indices, valor) {
   for (const f of indices) {
-    tabla.filas[f].incluir = typeof valor === "function" ? valor(tabla.filas[f].incluir) : valor;
+    tabla.filas[f].incluir = valor;
     pintarFila(f);
   }
   actualizarSeleccion();
@@ -335,9 +618,8 @@ function cambiarFilas(indices, valor) {
 
 function cambiarColumnas(indices, valor) {
   for (const c of indices) {
-    const nuevo = typeof valor === "function" ? valor(tabla.config[c].incluir) : valor;
-    if (nuevo === tabla.config[c].incluir) continue;
-    tabla.config[c].incluir = nuevo;
+    if (valor === tabla.config[c].incluir) continue;
+    tabla.config[c].incluir = valor;
     pintarColumna(c);
   }
   actualizarSeleccion();
@@ -352,6 +634,7 @@ let arrastre = null;
 let ultimaFila = null;
 
 function terminarArrastre() {
+  arrastreCeldas = null;
   if (!arrastre) return;
   arrastre = null;
   $("contenedor-csv").classList.remove("arrastrando");
@@ -364,6 +647,11 @@ function celdaDeFila(f, ...hijos) {
   td.onpointerdown = (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
+    if (modoCeldas) {
+      empezarSeleccionCeldas({ fila: f, columna: 0 }, e.shiftKey, "filas");
+      if (td.hasPointerCapture(e.pointerId)) td.releasePointerCapture(e.pointerId);
+      return;
+    }
     const valor = !tabla.filas[f].incluir;
     cambiarFilas(e.shiftKey && ultimaFila != null ? rango(ultimaFila, f) : [f], valor);
     ultimaFila = f;
@@ -373,6 +661,7 @@ function celdaDeFila(f, ...hijos) {
     if (td.hasPointerCapture(e.pointerId)) td.releasePointerCapture(e.pointerId);
   };
   td.onpointerenter = () => {
+    if (arrastreCeldas) arrastrarCeldasHasta({ fila: f, columna: arrastreCeldas.ultimo.columna });
     if (!arrastre) return;
     cambiarFilas(rango(arrastre.ultima, f), arrastre.valor);
     arrastre.ultima = ultimaFila = f;
@@ -383,6 +672,144 @@ function celdaDeFila(f, ...hijos) {
   };
   return td;
 }
+
+// ---------- Modo selección de celdas ----------
+
+let modoCeldas = false;
+const seleccionadas = new Set();
+let anclaCelda = null;
+// { tipo, valor, desde, ultimo, previas }: la zona entre `desde` y el punto actual toma `valor`; el resto vuelve a `previas`.
+// `tipo` dice si la zona es un rectángulo de celdas, filas completas, columnas completas o toda la tabla
+let arrastreCeldas = null;
+
+function actualizarBotonCeldas() {
+  $("contador-celdas").textContent = seleccionadas.size;
+  $("formatear-seleccion").disabled = ocupado || !seleccionadas.size;
+  $("limpiar-celdas").disabled = !seleccionadas.size;
+  if (tabla) pintarCabecerasSeleccion();
+}
+
+function marcarCelda(celda, valor) {
+  if (valor) seleccionadas.add(celda);
+  else seleccionadas.delete(celda);
+  celda.td.classList.toggle("seleccionada", valor);
+}
+
+function seleccionable(celda) {
+  const ocultando = $("ocultar-excluidas").getAttribute("aria-pressed") === "true";
+  // Las vacías no tienen nada que formatear: marcarlas solo inflaría el contador
+  return Boolean(celda.original.trim()) && !(ocultando && !tabla.filas[celda.fila].incluir);
+}
+
+function celdasEntre(a, b) {
+  const celdas = [];
+  for (const f of rango(a.fila, b.fila)) {
+    for (const c of rango(a.columna, b.columna)) {
+      if (seleccionable(tabla.celdas[f][c])) celdas.push(tabla.celdas[f][c]);
+    }
+  }
+  return celdas;
+}
+
+function celdasDeZona(tipo, desde, hasta) {
+  const filaFinal = tabla.filas.length - 1;
+  const columnaFinal = tabla.config.length - 1;
+  if (tipo === "filas") return celdasEntre({ fila: desde.fila, columna: 0 }, { fila: hasta.fila, columna: columnaFinal });
+  if (tipo === "columnas") return celdasEntre({ fila: 0, columna: desde.columna }, { fila: filaFinal, columna: hasta.columna });
+  if (tipo === "todo") return celdasEntre({ fila: 0, columna: 0 }, { fila: filaFinal, columna: columnaFinal });
+  return celdasEntre(desde, hasta);
+}
+
+function arrastrarCeldasHasta(punto) {
+  const { tipo, valor, desde, previas } = arrastreCeldas;
+  arrastreCeldas.ultimo = { fila: punto.fila, columna: punto.columna };
+  const zona = new Set(celdasDeZona(tipo, desde, punto));
+  for (const c of tabla.celdas.flat()) {
+    const elegida = zona.has(c) ? valor : previas.has(c);
+    if (elegida !== seleccionadas.has(c)) marcarCelda(c, elegida);
+  }
+  actualizarBotonCeldas();
+}
+
+function empezarSeleccionCeldas(punto, conShift, tipo = "celdas") {
+  const rangoDesdeAncla = conShift && anclaCelda;
+  const inicial = celdasDeZona(tipo, punto, punto);
+  arrastreCeldas = {
+    tipo,
+    valor: rangoDesdeAncla ? true : !inicial.every((c) => seleccionadas.has(c)),
+    desde: rangoDesdeAncla ? anclaCelda : punto,
+    previas: new Set(seleccionadas),
+  };
+  if (!rangoDesdeAncla) anclaCelda = { fila: punto.fila, columna: punto.columna };
+  arrastrarCeldasHasta(punto);
+}
+
+// En modo selección, los títulos de columna y la esquina eligen celdas en vez de abrir sus controles
+function seleccionarDesdeCabecera(th, tipo, punto) {
+  th.onpointerdown = (e) => {
+    if (!modoCeldas || e.button !== 0 || e.target.closest("label, input, select, button")) return;
+    e.preventDefault();
+    empezarSeleccionCeldas(punto(), e.shiftKey, tipo);
+    if (th.hasPointerCapture(e.pointerId)) th.releasePointerCapture(e.pointerId);
+  };
+  th.onpointerenter = () => {
+    if (arrastreCeldas) arrastrarCeldasHasta(punto());
+  };
+}
+
+function pintarCabecerasSeleccion() {
+  const completa = (celdas) => {
+    const elegibles = celdas.filter(seleccionable);
+    return elegibles.length > 0 && elegibles.every((c) => seleccionadas.has(c));
+  };
+  tabla.filas.forEach((fila, f) => fila.tr.firstChild.classList.toggle("seleccionada", completa(tabla.celdas[f])));
+  tabla.config.forEach((conf, c) => conf.th.classList.toggle("seleccionada", completa(tabla.celdas.map((fila) => fila[c]))));
+}
+
+// En modo selección solo se formatea con «Formatear celdas»: los botones sueltos se apagan para no mezclar
+function actualizarBotonesFormatear() {
+  document.querySelectorAll("#cuerpo-csv td.celda button, #cabecera-csv .formatear-columna")
+    .forEach((b) => (b.disabled = ocupado || modoCeldas));
+}
+
+function limpiarSeleccionCeldas() {
+  for (const celda of [...seleccionadas]) marcarCelda(celda, false);
+  anclaCelda = null;
+  actualizarBotonCeldas();
+}
+
+function cambiarModoCeldas(activo) {
+  modoCeldas = activo;
+  $("modo-celdas").setAttribute("aria-pressed", String(activo));
+  $("contenedor-csv").classList.toggle("modo-celdas", activo);
+  $("formatear-tabla").hidden = activo;
+  $("formatear-seleccion").hidden = $("limpiar-celdas").hidden = !activo;
+  $("ayuda-filas").hidden = activo;
+  actualizarBotonesFormatear();
+  if (activo) {
+    mostrarEstado("estado-csv", "Clic en celdas, números de fila o títulos de columna para elegirlos · Arrastrá para marcar varios · Shift + clic marca un rango · Esc para salir");
+  } else {
+    limpiarSeleccionCeldas();
+    mostrarEstado("estado-csv", "");
+  }
+  actualizarBotonCeldas();
+}
+
+$("modo-celdas").onclick = () => cambiarModoCeldas(!modoCeldas);
+$("limpiar-celdas").onclick = limpiarSeleccionCeldas;
+
+$("formatear-seleccion").onclick = async () => {
+  // En el orden de la tabla, no en el que se fueron eligiendo
+  const elegidas = tabla.celdas.flat().filter((c) => seleccionadas.has(c));
+  const listas = await formatearCeldas(elegidas);
+  // Las que fallaron o no se alcanzaron a procesar quedan marcadas para reintentar
+  for (const celda of listas) marcarCelda(celda, false);
+  actualizarBotonCeldas();
+};
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && modoCeldas && !document.querySelector("dialog[open]")) cambiarModoCeldas(false);
+});
 
 function interruptorChico(onchange, titulo) {
   const input = el("input", { type: "checkbox", checked: true });
@@ -429,12 +856,16 @@ function mostrarTabla(data, nombreArchivo) {
   };
 
   ultimaFila = null;
+  seleccionadas.clear();
+  anclaCelda = null;
   const [todas, interruptorTodas] = interruptorChico(
     (valor) => cambiarFilas(tabla.filas.map((_, f) => f), valor),
     "Incluir todas las filas en el JSON",
   );
   todas.id = "todas-filas";
-  const filaCabecera = el("tr", {}, el("th", { className: "col-fila" }, interruptorTodas, el("div", { className: "clave-json", textContent: "Filas" })));
+  const esquina = el("th", { className: "col-fila" }, interruptorTodas, el("div", { className: "clave-json", textContent: "Filas" }));
+  seleccionarDesdeCabecera(esquina, "todo", () => ({ fila: 0, columna: 0 }));
+  const filaCabecera = el("tr", {}, esquina);
 
   data.columnas.forEach((nombre, c) => {
     const select = el("select", { title: "Regla para esta columna" });
@@ -444,7 +875,7 @@ function mostrarTabla(data, nombreArchivo) {
     tabla.selects.push(select);
 
     const boton = el("button", {
-      className: "btn chico",
+      className: "btn chico formatear-columna",
       textContent: "Formatear",
       title: "Formatear las celdas pendientes de esta columna (se omiten las filas excluidas)",
     });
@@ -465,6 +896,7 @@ function mostrarTabla(data, nombreArchivo) {
       el("div", { className: "clave-json" }),
       el("div", { className: "acciones" }, select, boton),
     );
+    seleccionarDesdeCabecera(th, "columnas", () => ({ fila: arrastreCeldas?.ultimo.fila ?? 0, columna: c }));
     tabla.config.push({ incluir: true, clave: nombre, th, interruptor });
     filaCabecera.append(th);
   });
@@ -483,13 +915,22 @@ function mostrarTabla(data, nombreArchivo) {
     });
     tabla.filas.push({ incluir: true, tr, interruptor });
     tabla.celdas.push(data.columnas.map((_, c) => {
-      const td = el("td", { className: "celda" });
+      const td = el("td", { className: (valores[c] ?? "").trim() ? "celda" : "celda vacia" });
       tr.append(td);
       const celda = { original: valores[c] ?? "", html: null, regla: null, estado: null, error: null, td, fila: i, columna: c };
       td.onclick = (e) => {
         // Si el usuario estaba seleccionando texto, no abrir el visor
-        if (e.target.closest("button") || getSelection().toString()) return;
+        if (modoCeldas || e.target.closest("button") || getSelection().toString()) return;
         abrirCelda(celda);
+      };
+      td.onpointerdown = (e) => {
+        if (!modoCeldas || e.button !== 0 || e.target.closest("button")) return;
+        e.preventDefault();
+        empezarSeleccionCeldas(celda, e.shiftKey);
+        if (td.hasPointerCapture(e.pointerId)) td.releasePointerCapture(e.pointerId);
+      };
+      td.onpointerenter = () => {
+        if (arrastreCeldas) arrastrarCeldasHasta(celda);
       };
       return celda;
     }));
@@ -508,19 +949,12 @@ function mostrarTabla(data, nombreArchivo) {
   $("zona-detalle").replaceChildren(numFilas, " filas · ", numColumnas, " columnas · hacé clic o arrastrá otro archivo para cambiarlo");
   contar(numFilas, data.filas.length);
   contar(numColumnas, data.columnas.length);
+  actualizarBotonCeldas();
   $("controles-csv").hidden = false;
   $("contenedor-csv").hidden = false;
   reiniciarAnimacion($("controles-csv"), "aparecer");
   reiniciarAnimacion($("contenedor-csv"), "aparecer");
   mostrarEstado("estado-csv", "");
-}
-
-for (const boton of document.querySelectorAll("[data-seleccion]")) {
-  boton.onclick = () => {
-    const valor = { todas: true, ninguna: false, invertir: (actual) => !actual }[boton.dataset.accion];
-    if (boton.dataset.seleccion === "filas") cambiarFilas(tabla.filas.map((_, f) => f), valor);
-    else cambiarColumnas(tabla.config.map((_, c) => c), valor);
-  };
 }
 
 $("ocultar-excluidas").onclick = () => {
@@ -540,16 +974,23 @@ function bloquear(valor) {
   $("detener").disabled = false;
   $("progreso").hidden = !valor;
   if (celdaAbierta) pintarModalCelda();
+  actualizarBotonCeldas();
+  actualizarBotonesFormatear();
 }
 
 function avanzar(hechas, total) {
   $("progreso-barra").style.width = `${(hechas / total) * 100}%`;
 }
 
+// Devuelve las celdas que se formatearon bien
 async function formatearCeldas(celdas) {
-  if (ocupado) return;
+  const listas = [];
+  if (ocupado) return listas;
   const pendientes = celdas.filter((c) => c.original.trim());
-  if (!pendientes.length) return mostrarEstado("estado-csv", "No hay celdas con texto para formatear", "error");
+  if (!pendientes.length) {
+    mostrarEstado("estado-csv", "No hay celdas con texto para formatear", "error");
+    return listas;
+  }
 
   cancelar = false;
   bloquear(true);
@@ -567,6 +1008,7 @@ async function formatearCeldas(celdas) {
       try {
         celda.html = await pedirFormato(celda.original, regla);
         Object.assign(celda, { regla, estado: null, error: null });
+        listas.push(celda);
         reiniciarAnimacion(celda.td, "recien");
         setTimeout(() => celda.td.classList.remove("recien"), 1200);
       } catch (e) {
@@ -595,6 +1037,7 @@ async function formatearCeldas(celdas) {
     bloquear(false);
     pintarTodo();
   }
+  return listas;
 }
 
 // ---------- Sesión: el progreso de la tabla se guarda solo y se recupera al volver ----------

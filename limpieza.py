@@ -1,5 +1,7 @@
+import difflib
 import re
-from html import escape
+import unicodedata
+from html import escape, unescape
 from html.parser import HTMLParser
 
 # Se quitan junto con todo lo que tienen adentro
@@ -14,6 +16,13 @@ ESQUEMA_PELIGROSO = re.compile(r"(javascript|vbscript|data):", re.I)
 IMAGEN_EMBEBIDA = re.compile(r"data:image/(png|gif|jpe?g|webp);", re.I)
 ESTILO_PELIGROSO = re.compile(r"expression\s*\(|javascript:|behavior\s*:", re.I)
 BLOQUE_CODIGO = re.compile(r"^```[\w-]*\s*\n?(.*?)\n?```$", re.S)
+
+ENCABEZADO = re.compile(r"<(h[1-6])\b[^>]*>(.*?)</\1>[ \t]*\n?", re.S | re.I)
+PRIMER_PARRAFO = re.compile(r"<p\b[^>]*>", re.I)
+# Un título de verdad es corto; con más palabras es un párrafo que el modelo envolvió en <hN>
+MAX_PALABRAS_TITULO = 15
+# Tolera que el modelo corrija una errata en el título sin darlo por inventado
+PARECIDO_MINIMO = 0.85
 
 
 class _Limpiador(HTMLParser):
@@ -72,14 +81,44 @@ class _Limpiador(HTMLParser):
             self.partes.append(f"&#{name};")
 
 
+def quitar_bloque_codigo(texto: str) -> str:
+    texto = texto.strip()
+    bloque = BLOQUE_CODIGO.match(texto)
+    return bloque.group(1).strip() if bloque else texto
+
+
 def limpiar_html(html: str) -> str:
     """Quita lo que el modelo agrega de más (bloques ```, <html>, <head>, <body>) y todo lo que
     pueda ejecutar código (scripts, iframes, atributos on..., enlaces javascript:)."""
-    texto = html.strip()
-    bloque = BLOQUE_CODIGO.match(texto)
-    if bloque:
-        texto = bloque.group(1)
     limpiador = _Limpiador()
-    limpiador.feed(texto)
+    limpiador.feed(quitar_bloque_codigo(html))
     limpiador.close()
     return "".join(limpiador.partes).strip()
+
+
+def _normalizar(texto: str) -> str:
+    texto = unescape(re.sub(r"<[^>]+>", "", texto))
+    texto = unicodedata.normalize("NFD", texto.lower())
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")
+    texto = re.sub(r"^[\s#*\-•\d.)]+", "", texto)
+    return re.sub(r"\s+", " ", texto).strip(" :.;*")
+
+
+def corregir_titulos(html: str, original: str) -> str:
+    """Los modelos tienden a inventar títulos para "ordenar" el texto. Un encabezado se conserva
+    solo si es una línea que ya estaba en el original; si es una oración larga pasa a párrafo,
+    y si no estaba en el original se quita."""
+    lineas = {_normalizar(linea) for linea in original.splitlines()} - {""}
+    parrafo = PRIMER_PARRAFO.search(html)
+    apertura = parrafo.group(0) if parrafo else "<p>"
+
+    def revisar(m: re.Match) -> str:
+        contenido = m.group(2).strip()
+        texto = _normalizar(contenido)
+        if len(texto.split()) > MAX_PALABRAS_TITULO or re.search(r"[.!?]\s*$", unescape(re.sub(r"<[^>]+>", "", contenido))):
+            return f"{apertura}{contenido}</p>\n"
+        if texto in lineas or any(difflib.SequenceMatcher(None, texto, l).ratio() >= PARECIDO_MINIMO for l in lineas):
+            return m.group(0)
+        return ""
+
+    return ENCABEZADO.sub(revisar, html).strip()

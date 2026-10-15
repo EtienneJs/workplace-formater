@@ -5,7 +5,7 @@ import urllib.request
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
-from limpieza import limpiar_html
+from limpieza import corregir_titulos, limpiar_html, quitar_bloque_codigo
 
 MODEL = "qwen2.5:3b"
 OLLAMA_URL = "http://localhost:11434"
@@ -65,20 +65,42 @@ def _pedir(payload: dict) -> str:
         return json.loads(r.read())["response"]
 
 
+INSTRUCCION_SISTEMA = """Eres un editor de contenido. Recibes un contenido y una instrucción. Aplica ÚNICAMENTE lo que pide la instrucción y deja todo lo demás exactamente igual, palabra por palabra.
+
+- Si el contenido es HTML, responde con HTML y conserva las etiquetas y atributos que ya tiene (por ejemplo, style="text-align: justify;"), salvo que la instrucción pida cambiarlos.
+- Si el contenido es texto plano, responde con texto plano, sin etiquetas HTML.
+- Si la instrucción pide varias cosas, aplícalas todas.
+- No reemplaces palabras por sinónimos ni las adaptes a otra variante del español (por ejemplo, «magíster» no se cambia por «maestría»). Corregir una palabra es solo arreglar su ortografía o sus tildes.
+- Responde con el contenido completo ya modificado, no solo con la parte que cambió.
+- No agregues explicaciones, comentarios, comillas ni bloques de código Markdown."""
+
+
 def formatear(texto: str, regla: str, modelo: str | None = None) -> str:
     system = (RULES_DIR / f"{regla}.md").read_text(encoding="utf-8")
+    return corregir_titulos(limpiar_html(_generar(system, texto, modelo)), texto)
+
+
+def aplicar_instruccion(texto: str, instruccion: str, es_html: bool, modelo: str | None = None) -> str:
+    formato = "HTML" if es_html else "texto plano"
+    prompt = f"Instrucción: {instruccion}\n\nContenido ({formato}):\n{texto}"
+    respuesta = _generar(INSTRUCCION_SISTEMA, prompt, modelo)
+    # Sin corregir_titulos: la instrucción puede pedir justamente agregar un título
+    return limpiar_html(respuesta) if es_html else quitar_bloque_codigo(respuesta)
+
+
+def _generar(system: str, prompt: str, modelo: str | None = None) -> str:
     modelo = modelo or modelo_actual()
     payload = {
         "model": modelo,
         "system": system,
-        "prompt": texto,
+        "prompt": prompt,
         "stream": False,
         "options": {"temperature": 0.1},
         "keep_alive": "10m",
     }
     for intento in range(REINTENTOS + 1):
         try:
-            return limpiar_html(_pedir(payload))
+            return _pedir(payload)
         except HTTPError as e:
             try:
                 detalle = json.loads(e.read()).get("error", "")

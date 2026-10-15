@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -16,6 +17,7 @@ from format import (
     OllamaFallo,
     OllamaNoDisponible,
     OllamaTardo,
+    aplicar_instruccion,
     formatear,
     guardar_config,
     leer_config,
@@ -39,6 +41,16 @@ class Pedido(BaseModel):
 
 class Respuesta(BaseModel):
     html: str
+
+
+class PedidoInstruccion(BaseModel):
+    texto: str
+    instruccion: str
+    es_html: bool
+
+
+class RespuestaInstruccion(BaseModel):
+    resultado: str
 
 
 class TablaCsv(BaseModel):
@@ -135,8 +147,24 @@ def formatear_endpoint(p: Pedido) -> Respuesta:
         raise HTTPException(404, f"No existe la regla '{p.regla}'")
     if not p.texto.strip():
         raise HTTPException(400, "El texto está vacío")
-    try:
+    with errores_ollama():
         return Respuesta(html=formatear(p.texto, p.regla))
+
+
+@app.post("/instruccion")
+def instruccion_endpoint(p: PedidoInstruccion) -> RespuestaInstruccion:
+    if not p.texto.strip():
+        raise HTTPException(400, "La celda está vacía")
+    if not p.instruccion.strip():
+        raise HTTPException(400, "Escribí qué querés cambiar")
+    with errores_ollama():
+        return RespuestaInstruccion(resultado=aplicar_instruccion(p.texto, p.instruccion.strip(), p.es_html))
+
+
+@contextmanager
+def errores_ollama():
+    try:
+        yield
     except OllamaNoDisponible as e:
         raise HTTPException(503, str(e))
     except OllamaFallo as e:
