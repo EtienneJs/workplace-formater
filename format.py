@@ -5,7 +5,7 @@ import urllib.request
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
-from limpieza import corregir_titulos, limpiar_html, quitar_bloque_codigo
+from limpieza import cerrar_listas, corregir_titulos, limpiar_html, quitar_bloque_codigo, restaurar_texto
 
 MODEL = "qwen2.5:3b"
 OLLAMA_URL = "http://localhost:11434"
@@ -77,7 +77,8 @@ INSTRUCCION_SISTEMA = """Eres un editor de contenido. Recibes un contenido y una
 
 def formatear(texto: str, regla: str, modelo: str | None = None) -> str:
     system = (RULES_DIR / f"{regla}.md").read_text(encoding="utf-8")
-    return corregir_titulos(limpiar_html(_generar(system, texto, modelo)), texto)
+    html = cerrar_listas(corregir_titulos(limpiar_html(_generar(system, texto, modelo)), texto))
+    return restaurar_texto(html, texto)
 
 
 def aplicar_instruccion(texto: str, instruccion: str, es_html: bool, modelo: str | None = None) -> str:

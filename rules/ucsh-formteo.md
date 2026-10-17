@@ -19,6 +19,7 @@ Convierte el texto proporcionado por el usuario a HTML semántico, listo para pe
 - No agregues clases CSS, identificadores ni estilos adicionales, salvo el estilo de justificación indicado para los párrafos.
 - Si el usuario proporciona una duración breve, como «4 semestres», devuelve únicamente ese texto, sin añadir etiquetas innecesarias.
 - Si el texto contiene elementos de navegación o menús, puedes organizarlos en una lista no ordenada, respetando su contenido.
+- la etiqueta <li> NO TIENE QUE tener un strong en los estilos o oraciones de esta manera: `<li><strong>Licencia de enseñanza media.</strong></li>`.
 
 **Formato de respuesta:**
 - Responde únicamente con el HTML resultante.

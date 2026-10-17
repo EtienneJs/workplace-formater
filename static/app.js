@@ -17,7 +17,6 @@ function mostrarEstado(id, texto, tipo = "") {
   const cambioTipo = nodo.dataset.tipo !== tipo;
   nodo.textContent = texto;
   nodo.dataset.tipo = tipo;
-  if (cambioTipo && texto) reiniciarAnimacion(nodo, "aparecer");
 }
 
 function contar(nodo, hasta, duracion = 900) {
@@ -34,6 +33,8 @@ function contar(nodo, hasta, duracion = 900) {
 // ---------- Tema ----------
 
 function aplicarTema(tema) {
+  // Halloween quedó fuera del rediseño minimalista: quien lo tenía pasa a oscuro
+  if (tema !== "claro" && tema !== "oscuro") tema = "oscuro";
   document.documentElement.dataset.tema = tema;
   localStorage.setItem("tema", tema);
   for (const boton of document.querySelectorAll(".tema-btn")) {
@@ -66,12 +67,11 @@ function activarTab(panel, animar = true) {
     $(tab.dataset.panel).hidden = !activa;
     if (activa) moverIndicador(tab, animar);
   }
-  reiniciarAnimacion($(panel), "aparecer");
   localStorage.setItem("tab", panel);
 }
 
 for (const tab of tabs) tab.onclick = () => activarTab(tab.dataset.panel);
-activarTab(["panel-csv", "panel-config"].includes(localStorage.getItem("tab")) ? localStorage.getItem("tab") : "panel-texto", false);
+activarTab(["panel-docs", "panel-csv", "panel-config"].includes(localStorage.getItem("tab")) ? localStorage.getItem("tab") : "panel-texto", false);
 document.fonts.ready.then(() => moverIndicador(document.querySelector('.tab[aria-selected="true"]'), false));
 
 // ---------- Reglas ----------
@@ -118,8 +118,6 @@ $("btn").onclick = async () => {
     const html = await pedirFormato($("entrada").value, $("regla").value);
     $("salida").value = html;
     $("vista").innerHTML = html;
-    reiniciarAnimacion($("salida"), "aparecer");
-    reiniciarAnimacion($("vista"), "aparecer");
     mostrarEstado("estado", "Listo", "ok");
   } catch (e) {
     mostrarEstado("estado", e.message, "error");
@@ -272,8 +270,375 @@ function resaltarHtmlConNumeros(html) {
   return lineasHtml(html).map((l) => `<span class="linea" style="--nivel: ${l.nivel}">${l.html}</span>`).join("");
 }
 
+// ---------- Fidelidad: palabras que el modelo agregó o quitó respecto del original ----------
+
+const PALABRA = /[\p{L}\p{N}]+/gu;
+// Viñetas y numeración que el formateo convierte en <ul>/<ol>: no cuentan como texto quitado
+const MARCA_LISTA = /^[ \t]*(?:[-–•*·]|\d{1,2}[.)])[ \t]+/gm;
+const MAX_COMPARACION = 4_000_000;
+const ENTIDAD_HTML = /&(?:#\d+|#x[0-9a-f]+|\w+);/gi;
+// Palabras iguales que se muestran alrededor de cada cambio, como las líneas de contexto de git
+const CONTEXTO_CAMBIO = 6;
+const fidelidades = new WeakMap();
+
+// Los bloques separan palabras ("</h2><p>" no debe pegar dos palabras); las etiquetas en línea no
+function sinEtiquetas(html) {
+  return html.replace(/<!--[\s\S]*?-->/g, " ").replace(/<\/?([a-zA-Z][\w:-]*)[^>]*>/g,
+    (_, nombre) => (BLOQUES_HTML.has(nombre.toLowerCase()) || nombre.toLowerCase() === "br" ? " " : ""));
+}
+
+function decodificarHtml(texto) {
+  if (!texto.includes("&")) return texto;
+  plantillaTexto.innerHTML = texto;
+  return plantillaTexto.content.textContent;
+}
+
+function palabra(texto, inicio) {
+  return { texto, clave: texto.toLocaleLowerCase("es"), inicio, fin: inicio + texto.length };
+}
+
+// `inicio`/`fin` son posiciones en el texto; `separador` es lo que sigue a la palabra, solo para mostrarla legible
+function palabrasTexto(texto) {
+  const lista = [...texto.matchAll(PALABRA)].map((m) => palabra(m[0], m.index));
+  lista.forEach((p, i) => (p.separador = texto.slice(p.fin, lista[i + 1]?.inicio ?? texto.length).replace(/\s+/g, " ")));
+  return lista;
+}
+
+// Igual que palabrasTexto, pero con posiciones dentro del código HTML (sin mirar etiquetas ni entidades)
+function palabrasHtml(html) {
+  const lista = [];
+  for (const tramo of html.matchAll(/<!--[\s\S]*?-->|<[^>]*>|[^<]+/g)) {
+    if (tramo[0].startsWith("<")) continue;
+    const tapado = tramo[0].replace(ENTIDAD_HTML, (e) => " ".repeat(e.length));
+    for (const m of tapado.matchAll(PALABRA)) lista.push(palabra(m[0], tramo.index + m.index));
+  }
+  lista.forEach((p, i) => {
+    const entre = html.slice(p.fin, lista[i + 1]?.inicio ?? html.length);
+    p.separador = decodificarHtml(sinEtiquetas(entre)).replace(/\s+/g, " ");
+  });
+  return lista;
+}
+
+// Diferencia por palabras (subsecuencia común más larga):
+// [{ tipo: "igual" | "agregada" | "quitada", texto, separador, i (en el original), j (en el HTML) }]
+function diferenciaPalabras(antes, despues) {
+  const n = antes.length, m = despues.length;
+  if (n * m > MAX_COMPARACION) return null;
+  const largo = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      largo[i][j] = antes[i].clave === despues[j].clave ? largo[i + 1][j + 1] + 1 : Math.max(largo[i + 1][j], largo[i][j + 1]);
+    }
+  }
+  const partes = [];
+  let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && antes[i].clave === despues[j].clave) {
+      partes.push({ ...despues[j], tipo: "igual", i: i++, j: j++ });
+    } else if (j < m && (i === n || largo[i][j + 1] >= largo[i + 1][j])) {
+      partes.push({ ...despues[j], tipo: "agregada", i, j: j++ });
+    } else {
+      partes.push({ ...antes[i], tipo: "quitada", i: i++, j });
+    }
+  }
+  return partes;
+}
+
+// Agrupa las palabras distintas seguidas en cambios, cada uno con su contexto.
+// La clave identifica el cambio aunque se edite otra parte del HTML: así se recuerda si se aceptó.
+function agruparCambios(partes) {
+  const cambios = [];
+  for (let k = 0; k < partes.length; k++) {
+    if (partes[k].tipo === "igual") continue;
+    const desde = k;
+    while (k < partes.length && partes[k].tipo !== "igual") k++;
+    const tramo = partes.slice(desde, k);
+    let inicioContexto = desde;
+    while (inicioContexto > 0 && desde - inicioContexto < CONTEXTO_CAMBIO && partes[inicioContexto - 1].tipo === "igual") inicioContexto--;
+    let finContexto = k;
+    while (finContexto < partes.length && finContexto - k < CONTEXTO_CAMBIO && partes[finContexto].tipo === "igual") finContexto++;
+    const quitadas = tramo.filter((p) => p.tipo === "quitada");
+    const agregadas = tramo.filter((p) => p.tipo === "agregada");
+    const previa = partes[desde - 1] ?? null;
+    const siguiente = partes[k] ?? null;
+    cambios.push({
+      clave: [quitadas, agregadas, [previa ?? {}], [siguiente ?? {}]].map((l) => l.map((p) => p.clave ?? "").join(" ")).join("|"),
+      quitadas, agregadas, previa, siguiente,
+      antes: partes.slice(inicioContexto, desde),
+      despues: partes.slice(k, finContexto),
+      cortadoAntes: inicioContexto > 0,
+      cortadoDespues: finContexto < partes.length,
+    });
+    k--;
+  }
+  return cambios;
+}
+
+// null si la celda no está formateada o el texto es demasiado largo para comparar
+function fidelidad(celda) {
+  if (celda.html == null) return null;
+  const guardada = fidelidades.get(celda);
+  if (guardada && guardada.html === celda.html && guardada.original === celda.original) return guardada.resultado;
+  const origen = celda.original.replace(MARCA_LISTA, "");
+  const antes = palabrasTexto(origen);
+  const partes = diferenciaPalabras(antes, palabrasHtml(celda.html));
+  const resultado = partes && { origen, antes, partes, cambios: agruparCambios(partes) };
+  fidelidades.set(celda, { html: celda.html, original: celda.original, resultado });
+  return resultado;
+}
+
+function cambioAceptado(celda, cambio) {
+  return celda.aceptados.includes(cambio.clave);
+}
+
+function cambiosPendientes(celda) {
+  return fidelidad(celda)?.cambios.filter((c) => !cambioAceptado(celda, c)) ?? [];
+}
+
+// La celda tiene diferencias que nadie revisó todavía
+function paraRevisar(celda) {
+  return cambiosPendientes(celda).length > 0;
+}
+
+function resumenPalabras(lista) {
+  const unicas = [...new Set(lista)];
+  const muestra = unicas.slice(0, 8).map((p) => `«${p}»`).join(", ");
+  return unicas.length > 8 ? `${muestra} y ${unicas.length - 8} más` : muestra;
+}
+
+function etiquetaFidelidad(celda) {
+  const pendientes = cambiosPendientes(celda);
+  if (!pendientes.length) return null;
+  const agregadas = pendientes.flatMap((c) => c.agregadas.map((p) => p.texto));
+  const quitadas = pendientes.flatMap((c) => c.quitadas.map((p) => p.texto));
+  const titulo = [
+    agregadas.length && `Agregó: ${resumenPalabras(agregadas)}`,
+    quitadas.length && `Quitó: ${resumenPalabras(quitadas)}`,
+  ].filter(Boolean).join("\n");
+  const texto = [agregadas.length && `+${agregadas.length}`, quitadas.length && `−${quitadas.length}`].filter(Boolean).join(" ");
+  return el("span", {
+    className: "etiqueta aviso",
+    textContent: `⚠ ${texto}`,
+    title: `El texto no coincide con el original. Revisalo en la pestaña «Cambios».\n${titulo}`,
+  });
+}
+
+// ---------- Rechazar un cambio: devolver al HTML el texto del original ----------
+
+const BLOQUE_VACIO = /<(strong|b|em|i|u|span|h[1-6]|p|li|ul|ol)\b[^>]*>\s*<\/\1>\s*/gi;
+const CIERRE_BLOQUE_HTML = /<\/(p|li|h[1-6]|ul|ol|blockquote|div|table)>/gi;
+
+function sinBloquesVacios(html) {
+  let antes;
+  do {
+    antes = html;
+    html = html.replace(BLOQUE_VACIO, "");
+  } while (html !== antes);
+  return html;
+}
+
+// Rango a borrar para quitar un texto agregado: si es un rótulo al comienzo de un bloque
+// («Requisito N°1: …») se lleva también los dos puntos; si no, el espacio que lo separa de la palabra anterior
+function rangoAQuitar(html, desde, hasta) {
+  const anterior = html.slice(0, desde).trimEnd();
+  if (!anterior || anterior.endsWith(">")) {
+    return [desde, hasta + html.slice(hasta).match(/^[^\S\n]*[:;,.]?[^\S\n]*/)[0].length];
+  }
+  while (desde > 0 && /[^\S\n]/.test(html[desde - 1])) desde--;
+  return [desde, hasta];
+}
+
+// Lo quitado empezaba en otra línea del original: va como bloque propio después del bloque anterior
+function insertarBloques(html, lineas, posicion) {
+  CIERRE_BLOQUE_HTML.lastIndex = posicion;
+  const cierre = posicion > 0 ? CIERRE_BLOQUE_HTML.exec(html) : null;
+  const enLista = cierre?.[1].toLowerCase() === "li";
+  const apertura = enLista ? "<li>" : (html.match(/<p\b[^>]*>/i)?.[0] ?? "<p>");
+  const bloques = lineas.map((l) => `${apertura}${escaparHtml(l)}</${enLista ? "li" : "p"}>`).join("\n");
+  const donde = cierre ? cierre.index + cierre[0].length : 0;
+  return cierre ? `${html.slice(0, donde)}\n${bloques}${html.slice(donde)}` : `${bloques}\n${html}`;
+}
+
+function rechazarCambio(celda, cambio) {
+  const { origen, antes } = fidelidad(celda);
+  const { quitadas, agregadas, previa, siguiente } = cambio;
+  const html = celda.html;
+  const textoOriginal = quitadas.length ? origen.slice(quitadas[0].inicio, quitadas.at(-1).fin) : "";
+  const enLinea = textoOriginal.replace(/\s+/g, " ");
+
+  if (agregadas.length) {
+    // Tramos de palabras agregadas sin etiquetas en medio (un título inventado y la palabra siguiente son dos)
+    const tramos = [[agregadas[0]]];
+    for (const p of agregadas.slice(1)) {
+      const ultimo = tramos.at(-1);
+      if (html.slice(ultimo.at(-1).fin, p.inicio).includes("<")) tramos.push([p]);
+      else ultimo.push(p);
+    }
+    // El texto original va en el tramo pegado al texto que siguió igual; los demás tramos se borran
+    const destino = enLinea ? (siguiente ? tramos.length - 1 : 0) : -1;
+    let nuevo = html;
+    for (let t = tramos.length - 1; t >= 0; t--) {
+      let desde = tramos[t][0].inicio, hasta = tramos[t].at(-1).fin;
+      if (t !== destino) [desde, hasta] = rangoAQuitar(nuevo, desde, hasta);
+      nuevo = nuevo.slice(0, desde) + (t === destino ? escaparHtml(enLinea) : "") + nuevo.slice(hasta);
+    }
+    return sinBloquesVacios(nuevo);
+  }
+
+  // Solo se borró texto: vuelve con los signos que lo seguían («Específicas:», «… importante.»)
+  const finQuitado = quitadas.at(-1).fin;
+  const conSignos = origen.slice(quitadas[0].inicio, finQuitado + origen.slice(finQuitado).match(/^[^\s\p{L}\p{N}]*/u)[0].length);
+  const separadorPrevio = previa ? origen.slice(antes[previa.i].fin, quitadas[0].inicio) : "\n";
+  if (separadorPrevio.includes("\n")) {
+    const lineas = conSignos.split("\n").map((l) => l.trim()).filter(Boolean);
+    return insertarBloques(html, lineas, previa ? previa.fin : 0);
+  }
+  if (siguiente && !html.slice(previa.fin, siguiente.inicio).includes("<")) {
+    const tramo = origen.slice(antes[previa.i].fin, antes[siguiente.i].inicio).replace(/\s+/g, " ");
+    return html.slice(0, previa.fin) + escaparHtml(tramo) + html.slice(siguiente.inicio);
+  }
+  // La primera línea va pegada a la palabra anterior; las siguientes, como bloques propios
+  const [primera, ...resto] = conSignos.split("\n");
+  const lineas = resto.map((l) => l.trim()).filter(Boolean);
+  let donde = previa.fin, agregado;
+  if (separadorPrevio.trim()) {
+    // "oración." + " Segunda oración importante."
+    donde += html.slice(previa.fin).match(/^[^\s<]*/)[0].length;
+    agregado = primera;
+  } else {
+    // "puntaje" + " PAES" + "." que ya estaba en el HTML
+    agregado = primera.replace(/[^\p{L}\p{N}]+$/u, "");
+  }
+  agregado = ` ${escaparHtml(agregado.replace(/\s+/g, " ").trim())}`;
+  const nuevo = html.slice(0, donde) + agregado + html.slice(donde);
+  return lineas.length ? insertarBloques(nuevo, lineas, donde + agregado.length) : nuevo;
+}
+
+function rechazarCambios(celda, cambios) {
+  const claves = new Set(cambios.map((c) => c.clave));
+  const fallidos = new Set();
+  // Se recalcula la diferencia después de cada uno: las posiciones en el HTML cambian. De atrás hacia adelante.
+  for (let vueltas = 0; vueltas < 200; vueltas++) {
+    const cambio = cambiosPendientes(celda).findLast((c) => claves.has(c.clave) && !fallidos.has(c.clave));
+    if (!cambio) break;
+    const html = rechazarCambio(celda, cambio);
+    if (html === celda.html) fallidos.add(cambio.clave);
+    else celda.html = html;
+  }
+  pintarCelda(celda);
+  if (fallidos.size) mostrarEstado("estado-csv", "Algún cambio no se pudo deshacer solo: corregilo con «Editar HTML»", "aviso");
+}
+
+function aceptarCambios(celda, cambios) {
+  celda.aceptados = [...new Set([...celda.aceptados, ...cambios.map((c) => c.clave)])];
+  pintarCelda(celda);
+}
+
+function botonDiff(texto, clase, titulo, accion) {
+  const boton = el("button", { type: "button", className: `diff-boton ${clase}`, textContent: texto, title: titulo, disabled: ocupado });
+  boton.onclick = accion;
+  return boton;
+}
+
+function lineaDiff(cambio, tipo) {
+  const quitada = tipo === "quitada";
+  const palabrasCambio = quitada ? cambio.quitadas : cambio.agregadas;
+  const texto = el("span", { className: "diff-texto" });
+  if (cambio.cortadoAntes) texto.append("… ");
+  for (const p of cambio.antes) texto.append(p.texto, p.separador || " ");
+  palabrasCambio.forEach((p, k) => {
+    texto.append(el(quitada ? "del" : "ins", { textContent: p.texto }));
+    if (k < palabrasCambio.length - 1 || cambio.despues.length) texto.append(p.separador || " ");
+  });
+  for (const p of cambio.despues) texto.append(p.texto, p.separador || " ");
+  if (cambio.cortadoDespues) texto.append("…");
+  return el("div", { className: `diff-linea ${tipo}` },
+    el("span", { className: "diff-signo", textContent: quitada ? "−" : "+", ariaHidden: "true" }), texto);
+}
+
+function bloqueCambio(celda, cambio, n, total) {
+  const aceptado = cambioAceptado(celda, cambio);
+  const q = cambio.quitadas.length, a = cambio.agregadas.length;
+  const cabecera = el("div", { className: "diff-cabecera" },
+    el("code", { className: "diff-posicion", textContent: `@@ ${n + 1} de ${total} @@` }),
+    el("span", { className: "diff-resumen" },
+      q ? el("span", { className: "menos", textContent: `−${q}` }) : "",
+      a ? el("span", { className: "mas", textContent: `+${a}` }) : ""),
+    el("span", { className: "diff-tipo", textContent: !q ? "agregó" : !a ? "quitó" : "cambió" }),
+    el("span", { className: "espacio" }));
+  if (aceptado) {
+    cabecera.append(
+      el("span", { className: "diff-estado", textContent: "✓ Aceptado" }),
+      botonDiff("Deshacer", "deshacer", "Volver a dejar este cambio pendiente", () => {
+        celda.aceptados = celda.aceptados.filter((c) => c !== cambio.clave);
+        pintarCelda(celda);
+      }));
+  } else {
+    cabecera.append(
+      botonDiff("✕ Rechazar", "rechazar", "Descartar el cambio del modelo y volver al texto original", () => rechazarCambios(celda, [cambio])),
+      botonDiff("✓ Aceptar", "aceptar", "Quedarse con el cambio del modelo", () => aceptarCambios(celda, [cambio])));
+  }
+  const bloque = el("section", { className: `diff-cambio${aceptado ? " aceptado" : ""}` }, cabecera);
+  if (q) bloque.append(lineaDiff(cambio, "quitada"));
+  if (a) bloque.append(lineaDiff(cambio, "agregada"));
+  return bloque;
+}
+
+function pintarCambios(cuerpo, celda) {
+  const { partes, cambios } = fidelidad(celda);
+  const scroll = cuerpo.scrollTop;
+  const completoAbierto = cuerpo.querySelector(".diff-completo")?.open ?? false;
+  cuerpo.replaceChildren();
+  if (!cambios.length) {
+    cuerpo.append(el("p", { className: "cambios-ok", textContent: "✓ El HTML tiene exactamente las mismas palabras que el original" }));
+    return;
+  }
+  const pendientes = cambios.filter((c) => !cambioAceptado(celda, c));
+  const barra = el("div", { className: "diff-barra" },
+    el("span", {
+      className: `diff-total${pendientes.length ? "" : " listo"}`,
+      textContent: pendientes.length
+        ? `${pendientes.length} de ${cambios.length} ${cambios.length === 1 ? "cambio pendiente" : "cambios pendientes"}`
+        : `✓ ${cambios.length === 1 ? "El cambio está aceptado" : `Los ${cambios.length} cambios están aceptados`}`,
+    }),
+    el("span", { className: "espacio" }));
+  if (pendientes.length > 1) {
+    barra.append(
+      botonDiff("✕ Rechazar todos", "rechazar", "Volver al texto original en todos los cambios pendientes", () => rechazarCambios(celda, pendientes)),
+      botonDiff("✓ Aceptar todos", "aceptar", "Quedarse con todos los cambios pendientes del modelo", () => aceptarCambios(celda, pendientes)));
+  }
+  const lista = el("div", { className: "diff-lista" });
+  cambios.forEach((cambio, n) => lista.append(bloqueCambio(celda, cambio, n, cambios.length)));
+
+  const texto = el("p", { className: "cambios-texto" });
+  for (const p of partes) {
+    texto.append(p.tipo === "igual" ? p.texto : el(p.tipo === "agregada" ? "ins" : "del", { textContent: p.texto }), p.separador || " ");
+  }
+  const completo = el("details", { className: "diff-completo", open: completoAbierto },
+    el("summary", { textContent: "Ver el texto completo con los cambios" }), texto);
+  const leyenda = el("p", { className: "cambios-leyenda", textContent: "Se ignoran etiquetas, mayúsculas, signos y la numeración de listas" });
+  cuerpo.append(barra, lista, completo, leyenda);
+  cuerpo.scrollTop = scroll;
+}
+
 function reglaDeColumna(c) {
   return tabla.selects[c].value || $("regla-general").value;
+}
+
+// La celda de la tabla muestra unas pocas líneas: maquetar el texto entero de miles de celdas es lo que hace lenta la tabla
+const MAX_VISTA_PREVIA = 600;
+
+function recortarTexto(texto) {
+  return texto.length > MAX_VISTA_PREVIA ? `${texto.slice(0, MAX_VISTA_PREVIA)}…` : texto;
+}
+
+// Se corta fuera de una etiqueta; las que quedan abiertas las cierra el navegador al interpretar el HTML
+function recortarHtml(html) {
+  if (html.length <= MAX_VISTA_PREVIA) return html;
+  const cierre = html.indexOf(">", MAX_VISTA_PREVIA), apertura = html.indexOf("<", MAX_VISTA_PREVIA);
+  if (cierre >= 0 && (apertura < 0 || cierre < apertura)) return html.slice(0, cierre + 1);
+  const espacio = html.slice(MAX_VISTA_PREVIA).search(/\s/);
+  return espacio < 0 ? html : `${html.slice(0, MAX_VISTA_PREVIA + espacio)}…`;
 }
 
 function pintarCelda(celda) {
@@ -281,25 +646,29 @@ function pintarCelda(celda) {
   const contenido = el("div", { className: "contenido" });
   if (celda.html != null && !verCodigo) {
     contenido.classList.add("html");
-    contenido.innerHTML = celda.html;
+    contenido.innerHTML = recortarHtml(celda.html);
   } else if (celda.html != null) {
     contenido.classList.add("codigo");
-    contenido.innerHTML = resaltarHtml(celda.html);
+    contenido.innerHTML = resaltarHtml(recortarHtml(celda.html));
   } else {
-    contenido.textContent = celda.original;
+    contenido.textContent = recortarTexto(celda.original);
   }
 
   const pie = el("div", { className: "pie" });
   const etiqueta = etiquetaCelda(celda);
   if (etiqueta) pie.append(etiqueta);
+  const aviso = celda.estado ? null : etiquetaFidelidad(celda);
+  if (aviso) pie.append(aviso);
+  celda.td.classList.toggle("revisar", Boolean(aviso));
 
+  const apagado = ocupado || modoCeldas;
   if (celda.original.trim()) {
-    const formatear = el("button", { className: "btn chico", textContent: "Formatear", title: "Formatear esta celda con la regla de su columna" });
+    const formatear = el("button", { className: "btn chico", textContent: "Formatear", title: "Formatear esta celda con la regla de su columna", disabled: apagado });
     formatear.onclick = () => formatearCeldas([celda]);
     pie.append(formatear);
   }
   if (celda.html != null) {
-    const original = el("button", { className: "btn chico", textContent: "Original", title: "Volver al texto original" });
+    const original = el("button", { className: "btn chico", textContent: "Original", title: "Volver al texto original", disabled: apagado });
     original.onclick = () => {
       Object.assign(celda, { html: null, regla: null, estado: null });
       pintarCelda(celda);
@@ -310,7 +679,6 @@ function pintarCelda(celda) {
   celda.td.classList.toggle("trabajando", celda.estado === "trabajando");
   celda.td.classList.toggle("excluida", !tabla.config[celda.columna].incluir);
   celda.td.replaceChildren(contenido, pie);
-  celda.td.querySelectorAll("button").forEach((b) => (b.disabled = ocupado || modoCeldas));
   if (celda === celdaAbierta) pintarModalCelda();
   programarVistaJson();
   programarGuardado();
@@ -337,7 +705,9 @@ function abrirCelda(celda) {
   celdaAbierta = celda;
   edicionCelda = null;
   const verCodigo = $("ver-codigo").getAttribute("aria-pressed") === "true";
-  modoCelda = celda.html == null ? "original" : verCodigo ? "codigo" : "vista";
+  // Al recorrer con las flechas revisando cambios, seguir en esa pestaña
+  const revisando = $("modal-celda").open && modoCelda === "cambios";
+  modoCelda = celda.html == null ? "original" : revisando ? "cambios" : verCodigo ? "codigo" : "vista";
   pintarModalCelda();
   if (!$("modal-celda").open) $("modal-celda").showModal();
 }
@@ -351,7 +721,7 @@ function pintarModalCelda() {
   $("celda-titulo").textContent = tabla.columnas[celda.columna];
   $("celda-subtitulo").textContent =
     `Fila ${celda.fila + 1} de ${tabla.filas.length}` + (excluida ? " · no se exporta al JSON" : "");
-  $("celda-etiqueta").replaceChildren(etiquetaCelda(celda) ?? "");
+  $("celda-etiqueta").replaceChildren(...[etiquetaCelda(celda), etiquetaFidelidad(celda)].filter(Boolean));
 
   const editando = edicionCelda != null;
   for (const boton of document.querySelectorAll("#celda-vistas .subtab")) {
@@ -389,7 +759,13 @@ function pintarModalCelda() {
   const cuerpo = $("celda-cuerpo");
   const texto = modoCelda === "original" ? celda.original : celda.html;
   cuerpo.className = `celda-cuerpo ${modoCelda}`;
-  if (!texto.trim()) {
+  const comparable = tieneHtml && fidelidad(celda) != null;
+  $("celda-copiar").hidden = modoCelda === "cambios";
+  if (modoCelda === "cambios" && !comparable) {
+    cuerpo.textContent = "El texto es demasiado largo para comparar palabra por palabra";
+  } else if (modoCelda === "cambios") {
+    pintarCambios(cuerpo, celda);
+  } else if (!texto.trim()) {
     cuerpo.classList.add("vacia");
     cuerpo.textContent = "La celda está vacía";
   } else if (modoCelda === "vista") {
@@ -437,7 +813,7 @@ $("celda-copiar").onclick = async () => {
 };
 
 $("celda-restaurar").onclick = () => {
-  Object.assign(celdaAbierta, { html: null, regla: null, estado: null, error: null });
+  Object.assign(celdaAbierta, { html: null, regla: null, estado: null, error: null, aceptados: [] });
   pintarCelda(celdaAbierta);
 };
 
@@ -695,17 +1071,21 @@ function marcarCelda(celda, valor) {
   celda.td.classList.toggle("seleccionada", valor);
 }
 
-function seleccionable(celda) {
-  const ocultando = $("ocultar-excluidas").getAttribute("aria-pressed") === "true";
+function ocultandoExcluidas() {
+  return $("ocultar-excluidas").getAttribute("aria-pressed") === "true";
+}
+
+function seleccionable(celda, ocultando = ocultandoExcluidas()) {
   // Las vacías no tienen nada que formatear: marcarlas solo inflaría el contador
-  return Boolean(celda.original.trim()) && !(ocultando && !tabla.filas[celda.fila].incluir);
+  return /\S/.test(celda.original) && !(ocultando && !tabla.filas[celda.fila].incluir);
 }
 
 function celdasEntre(a, b) {
+  const ocultando = ocultandoExcluidas();
   const celdas = [];
   for (const f of rango(a.fila, b.fila)) {
     for (const c of rango(a.columna, b.columna)) {
-      if (seleccionable(tabla.celdas[f][c])) celdas.push(tabla.celdas[f][c]);
+      if (seleccionable(tabla.celdas[f][c], ocultando)) celdas.push(tabla.celdas[f][c]);
     }
   }
   return celdas;
@@ -724,9 +1104,11 @@ function arrastrarCeldasHasta(punto) {
   const { tipo, valor, desde, previas } = arrastreCeldas;
   arrastreCeldas.ultimo = { fila: punto.fila, columna: punto.columna };
   const zona = new Set(celdasDeZona(tipo, desde, punto));
-  for (const c of tabla.celdas.flat()) {
-    const elegida = zona.has(c) ? valor : previas.has(c);
-    if (elegida !== seleccionadas.has(c)) marcarCelda(c, elegida);
+  for (const fila of tabla.celdas) {
+    for (const c of fila) {
+      const elegida = zona.has(c) ? valor : previas.has(c);
+      if (elegida !== seleccionadas.has(c)) marcarCelda(c, elegida);
+    }
   }
   actualizarBotonCeldas();
 }
@@ -757,13 +1139,23 @@ function seleccionarDesdeCabecera(th, tipo, punto) {
   };
 }
 
+// Una fila o columna está «completa» si todas sus celdas elegibles están marcadas (y tiene al menos una)
 function pintarCabecerasSeleccion() {
-  const completa = (celdas) => {
-    const elegibles = celdas.filter(seleccionable);
-    return elegibles.length > 0 && elegibles.every((c) => seleccionadas.has(c));
-  };
-  tabla.filas.forEach((fila, f) => fila.tr.firstChild.classList.toggle("seleccionada", completa(tabla.celdas[f])));
-  tabla.config.forEach((conf, c) => conf.th.classList.toggle("seleccionada", completa(tabla.celdas.map((fila) => fila[c]))));
+  const ocultando = ocultandoExcluidas();
+  const elegiblesFila = new Array(tabla.filas.length).fill(0), marcadasFila = new Array(tabla.filas.length).fill(0);
+  const elegiblesColumna = new Array(tabla.config.length).fill(0), marcadasColumna = new Array(tabla.config.length).fill(0);
+  for (const fila of tabla.celdas) {
+    for (const celda of fila) {
+      if (!seleccionable(celda, ocultando)) continue;
+      elegiblesFila[celda.fila]++;
+      elegiblesColumna[celda.columna]++;
+      if (!seleccionadas.has(celda)) continue;
+      marcadasFila[celda.fila]++;
+      marcadasColumna[celda.columna]++;
+    }
+  }
+  tabla.filas.forEach((fila, f) => fila.tr.firstChild.classList.toggle("seleccionada", elegiblesFila[f] > 0 && marcadasFila[f] === elegiblesFila[f]));
+  tabla.config.forEach((conf, c) => conf.th.classList.toggle("seleccionada", elegiblesColumna[c] > 0 && marcadasColumna[c] === elegiblesColumna[c]));
 }
 
 // En modo selección solo se formatea con «Formatear celdas»: los botones sueltos se apagan para no mezclar
@@ -838,13 +1230,15 @@ function pintarCabeceraColumna(c) {
 
 function pintarColumna(c) {
   pintarCabeceraColumna(c);
-  for (const fila of tabla.celdas) pintarCelda(fila[c]);
+  const excluida = !tabla.config[c].incluir;
+  for (const fila of tabla.celdas) fila[c].td.classList.toggle("excluida", excluida);
   actualizarSeleccion();
 }
 
 const ICONO_ENGRANAJE = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`;
 
-function mostrarTabla(data, nombreArchivo) {
+// `restaurar` aplica una sesión guardada antes del primer pintado, para no pintar la tabla dos veces
+function mostrarTabla(data, nombreArchivo, restaurar) {
   tabla = {
     columnas: data.columnas,
     separador: data.separador,
@@ -907,17 +1301,12 @@ function mostrarTabla(data, nombreArchivo) {
       cambiarFilas([i], valor);
       ultimaFila = i;
     }, "Incluir esta fila en el JSON");
-    const tr = el("tr", { className: "aparecer" },
-      celdaDeFila(i, etiqueta, el("div", { className: "num-fila", textContent: i + 1 })));
-    tr.style.animationDelay = `${Math.min(i, 15) * 40}ms`;
-    tr.addEventListener("animationend", (e) => {
-      if (e.target === tr) tr.classList.remove("aparecer");
-    });
+    const tr = el("tr", {}, celdaDeFila(i, etiqueta, el("div", { className: "num-fila", textContent: i + 1 })));
     tabla.filas.push({ incluir: true, tr, interruptor });
     tabla.celdas.push(data.columnas.map((_, c) => {
       const td = el("td", { className: (valores[c] ?? "").trim() ? "celda" : "celda vacia" });
       tr.append(td);
-      const celda = { original: valores[c] ?? "", html: null, regla: null, estado: null, error: null, td, fila: i, columna: c };
+      const celda = { original: valores[c] ?? "", html: null, regla: null, estado: null, error: null, aceptados: [], td, fila: i, columna: c };
       td.onclick = (e) => {
         // Si el usuario estaba seleccionando texto, no abrir el visor
         if (modoCeldas || e.target.closest("button") || getSelection().toString()) return;
@@ -938,7 +1327,9 @@ function mostrarTabla(data, nombreArchivo) {
   });
   $("cuerpo-csv").replaceChildren(...filas);
 
-  data.columnas.forEach((_, c) => pintarColumna(c));
+  restaurar?.();
+  tabla.config.forEach((_, c) => pintarCabeceraColumna(c));
+  pintarTodo();
   tabla.filas.forEach((_, f) => pintarFila(f));
   actualizarSeleccion();
   $("seleccion-csv").hidden = false;
@@ -952,8 +1343,6 @@ function mostrarTabla(data, nombreArchivo) {
   actualizarBotonCeldas();
   $("controles-csv").hidden = false;
   $("contenedor-csv").hidden = false;
-  reiniciarAnimacion($("controles-csv"), "aparecer");
-  reiniciarAnimacion($("contenedor-csv"), "aparecer");
   mostrarEstado("estado-csv", "");
 }
 
@@ -1007,10 +1396,8 @@ async function formatearCeldas(celdas) {
       pintarCelda(celda);
       try {
         celda.html = await pedirFormato(celda.original, regla);
-        Object.assign(celda, { regla, estado: null, error: null });
+        Object.assign(celda, { regla, estado: null, error: null, aceptados: [] });
         listas.push(celda);
-        reiniciarAnimacion(celda.td, "recien");
-        setTimeout(() => celda.td.classList.remove("recien"), 1200);
       } catch (e) {
         Object.assign(celda, { estado: "error", error: e.message });
         errores++;
@@ -1024,18 +1411,27 @@ async function formatearCeldas(celdas) {
       hechas++;
       avanzar(hechas, pendientes.length);
     }
+    const revisar = listas.filter(paraRevisar).length;
+    const aviso = revisar
+      ? ` · ⚠ ${revisar} ${revisar === 1 ? "tiene" : "tienen"} palabras agregadas o quitadas: revisalas en la pestaña «Cambios»`
+      : "";
     if (cancelar) {
-      mostrarEstado("estado-csv", `Detenido: ${hechas} de ${pendientes.length} celdas procesadas`);
+      mostrarEstado("estado-csv", `Detenido: ${hechas} de ${pendientes.length} celdas procesadas${aviso}`);
     } else if (errores) {
-      mostrarEstado("estado-csv", `${hechas} celdas procesadas, ${errores} con error`, "error");
+      mostrarEstado("estado-csv", `${hechas} celdas procesadas, ${errores} con error${aviso}`, "error");
     } else {
-      mostrarEstado("estado-csv", `Listo: ${hechas} ${hechas === 1 ? "celda formateada" : "celdas formateadas"}`, "ok");
+      mostrarEstado("estado-csv", `Listo: ${hechas} ${hechas === 1 ? "celda formateada" : "celdas formateadas"}${aviso}`, revisar ? "aviso" : "ok");
     }
   } catch (e) {
     mostrarEstado("estado-csv", e.message, "error");
   } finally {
     bloquear(false);
-    pintarTodo();
+    // Cada celda ya se pintó al terminar; solo puede quedar colgada la que estaba en curso al cortar
+    for (const celda of pendientes) {
+      if (celda.estado !== "trabajando") continue;
+      celda.estado = null;
+      pintarCelda(celda);
+    }
   }
   return listas;
 }
@@ -1076,7 +1472,7 @@ function datosSesion() {
     filasIncluidas: tabla.filas.map((f) => f.incluir),
     formateadas: tabla.celdas.flat()
       .filter((c) => c.html != null)
-      .map(({ fila, columna, html, regla }) => ({ fila, columna, html, regla })),
+      .map(({ fila, columna, html, regla, aceptados }) => ({ fila, columna, html, regla, ...(aceptados.length && { aceptados }) })),
   };
 }
 
@@ -1106,19 +1502,19 @@ async function recuperarSesion() {
   }
   if (!sesion || sesion.version !== VERSION_SESION || tabla) return;
   try {
-    mostrarTabla({ columnas: sesion.columnas, filas: sesion.filas, separador: sesion.separador }, sesion.nombreArchivo);
-    if (reglas.includes(sesion.reglaGeneral)) $("regla-general").value = sesion.reglaGeneral;
-    sesion.config.forEach(({ incluir, clave, regla }, c) => {
-      Object.assign(tabla.config[c], { incluir, clave });
-      if (reglas.includes(regla)) tabla.selects[c].value = regla;
+    mostrarTabla({ columnas: sesion.columnas, filas: sesion.filas, separador: sesion.separador }, sesion.nombreArchivo, () => {
+      if (reglas.includes(sesion.reglaGeneral)) $("regla-general").value = sesion.reglaGeneral;
+      sesion.config.forEach(({ incluir, clave, regla }, c) => {
+        Object.assign(tabla.config[c], { incluir, clave });
+        if (reglas.includes(regla)) tabla.selects[c].value = regla;
+      });
+      sesion.filasIncluidas.forEach((incluir, f) => (tabla.filas[f].incluir = incluir));
+      for (const { fila, columna, html, regla, aceptados, aceptado } of sesion.formateadas) {
+        const celda = Object.assign(tabla.celdas[fila][columna], { html, regla, aceptados: aceptados ?? [] });
+        // Sesiones anteriores guardaban «Dar por buena» para la celda entera
+        if (aceptado) celda.aceptados = fidelidad(celda)?.cambios.map((c) => c.clave) ?? [];
+      }
     });
-    sesion.filasIncluidas.forEach((incluir, f) => (tabla.filas[f].incluir = incluir));
-    for (const { fila, columna, html, regla } of sesion.formateadas) {
-      Object.assign(tabla.celdas[fila][columna], { html, regla });
-    }
-    tabla.columnas.forEach((_, c) => pintarColumna(c));
-    tabla.filas.forEach((_, f) => pintarFila(f));
-    actualizarSeleccion();
     const n = sesion.formateadas.length;
     mostrarEstado("estado-csv",
       `Se recuperó el trabajo de "${sesion.nombreArchivo}" · ${n} ${n === 1 ? "celda formateada" : "celdas formateadas"}`, "ok");
@@ -1199,12 +1595,16 @@ $("detener").onclick = () => {
 $("ver-codigo").onclick = () => {
   const activo = $("ver-codigo").getAttribute("aria-pressed") !== "true";
   $("ver-codigo").setAttribute("aria-pressed", String(activo));
-  if (tabla) pintarTodo();
+  // Solo cambian las celdas formateadas: las demás muestran el texto original en las dos vistas
+  if (tabla) for (const fila of tabla.celdas) for (const celda of fila) if (celda.html != null) pintarCelda(celda);
 };
 
 $("restaurar").onclick = () => {
-  for (const celda of tabla.celdas.flat()) Object.assign(celda, { html: null, regla: null, estado: null, error: null });
-  pintarTodo();
+  for (const celda of tabla.celdas.flat()) {
+    if (celda.html == null && !celda.estado) continue;
+    Object.assign(celda, { html: null, regla: null, estado: null, error: null, aceptados: [] });
+    pintarCelda(celda);
+  }
   mostrarEstado("estado-csv", "Se restauraron los textos originales", "ok");
 };
 
@@ -1305,7 +1705,6 @@ function abrirCajon(abrir, vista) {
   $("ver-json").setAttribute("aria-pressed", abrir && vista === "vista");
   $("ver-referencia").setAttribute("aria-pressed", abrir && vista === "referencia");
   if (!abrir) return;
-  if (estabaCerrado) reiniciarAnimacion($("cajon-json"), "entrar-cajon");
   actualizarVistaJson();
   pintarClavesReferencia();
 }
@@ -1786,7 +2185,6 @@ async function abrirRegla(nombre) {
     reglaGuardada = contenido;
     $("regla-texto").value = contenido;
     mostrarEditorRegla();
-    reiniciarAnimacion($("regla-panel"), "aparecer");
   } catch (e) {
     mostrarEstado("regla-estado", e.message, "error");
   }
